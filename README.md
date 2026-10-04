@@ -6,8 +6,6 @@ Run Altium Designer on Apple Silicon Macs with patched Wine. Tested with Altium 
 
 *[LimeSDR-USB](docs/screenshots/README.md) by [Lime Microsystems / Myriad-RF](https://github.com/myriadrf/LimeSDR-USB).*
 
-Altium doesn't support Wine.
-
 ## Install
 
 Get the Altium offline installer from your Altium account, then download and run the [kit installer](https://github.com/lazy-jubei/altium-wine/releases/tag/v1.0.0):
