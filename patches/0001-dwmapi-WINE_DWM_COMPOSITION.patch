@@ -1,0 +1,57 @@
+From: Altium-on-Wine kit
+Subject: dwmapi: Allow forcing desktop composition off via WINE_DWM_COMPOSITION=0
+
+Modules: dlls/dwmapi
+
+Wine reports DWM composition as enabled for Windows 8+ but has no compositor;
+DwmExtendFrameIntoClientArea is a stub. Delphi VCL GlassFrame and DevExpress
+blur/"glass" overlays then paint regions expecting DWM to fill them (black or
+smeared areas, dialogs hidden under a blurred overlay). With the env var set
+to 0, dwmapi reports composition disabled (like Windows 7 with Basic theme)
+so the app falls back to normal painting. Unset = stock behaviour.
+
+--- a/dlls/dwmapi/dwmapi_main.c
++++ b/dlls/dwmapi/dwmapi_main.c
+@@ -32,6 +32,23 @@
+
+ WINE_DEFAULT_DEBUG_CHANNEL(dwmapi);
+
++/* Altium-on-Wine kit: WINE_DWM_COMPOSITION=0 makes dwmapi report desktop
++ * composition as disabled, so apps that draw glass frames or blur overlays
++ * (Delphi VCL / DevExpress) fall back to plain painting instead of relying on
++ * a compositor Wine doesn't provide.  Default behaviour is unchanged. */
++static BOOL composition_forced_off(void)
++{
++    static LONG cached = -1;
++    WCHAR buf[4];
++    DWORD len;
++
++    if (cached != -1) return cached;
++    len = GetEnvironmentVariableW(L"WINE_DWM_COMPOSITION", buf, sizeof(buf) / sizeof(buf[0]));
++    cached = (len == 1 && buf[0] == '0');
++    if (cached) TRACE("composition forced off by WINE_DWM_COMPOSITION=0\n");
++    return cached;
++}
++
+
+ /**********************************************************************
+  *           DwmIsCompositionEnabled         (DWMAPI.@)
+@@ -49,6 +66,8 @@
+     version.dwOSVersionInfoSize = sizeof(version);
+     if (!RtlGetVersion(&version))
+         *enabled = (version.dwMajorVersion > 6 || (version.dwMajorVersion == 6 && version.dwMinorVersion >= 3));
++    if (*enabled && composition_forced_off())
++        *enabled = FALSE;
+
+     return S_OK;
+ }
+@@ -70,6 +89,9 @@
+ {
+     FIXME("(%p, %p) stub\n", hwnd, margins);
+
++    if (composition_forced_off())
++        return DWM_E_COMPOSITIONDISABLED;
++
+     return S_OK;
+ }
+

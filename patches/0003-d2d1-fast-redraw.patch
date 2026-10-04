@@ -1,0 +1,883 @@
+From: Altium-on-Wine kit
+Subject: d2d1: cache glyph geometry and GPU buffers, keep D3D state bound between draws
+
+Modules: dlls/d2d1
+Base: wine-11.16
+
+Altium's schematic editor issues ~8000 D2D primitives per redraw. Wine's d2d1:
+- swapped the whole D3D11 context state in and out around every primitive
+  (SwapDeviceContextState x2 per draw), which under DXVK costs ~150 ms per frame;
+- rebuilt glyph-run outline geometry (DirectWrite outline + CPU triangulation) every frame;
+- created new D3D11 index/vertex buffers for every fill and stroke;
+- created a new rectangle geometry for every FillRectangle.
+
+Now:
+- D2D state stays bound from the first draw until EndDraw/Flush/GetDC/SetTarget/destruction.
+  One owner per D3D device; any other context on that device (including one from another,
+  multithreaded factory, whose lock is taken first) restores the app state before it draws,
+  and falls back to the old per-draw swap if it can't. WINE_D2D_LAZY_STATE=0 disables this.
+- Glyph-run outline geometries are cached per ID2D1Device (65536 glyphs max; runs over 256
+  glyphs or with odd parameters aren't cached) and freed with the device.
+- Geometry fill/stroke buffers are created once per geometry and D3D device (immutable),
+  recreated if the size changes.
+- FillRectangle draws a cached unit square through the transform when the rect is finite.
+
+Wine's d2d1 conformance tests (dlls/d2d1/tests) give identical results with and without
+this patch, single- and multi-threaded. Schematic scroll went from ~230 ms per notch
+(seconds of backlog when scrolling fast) to ~85 ms per notch and ~40 fps.
+
+--- a/dlls/d2d1/d2d1_private.h
++++ b/dlls/d2d1/d2d1_private.h
+@@ -199,6 +199,9 @@
+     } target;
+     struct d2d_shape_resources shape_resources[D2D_SHAPE_TYPE_COUNT];
+     ID3D11Buffer *vs_cb;
++    ID2D1RectangleGeometry *unit_rect; /* Altium-on-Wine kit: reused by FillRectangle */
++    ID3DDeviceContextState *app_state; /* Altium-on-Wine kit: app state saved while ours is bound */
++    BOOL d2d_state_active;
+     ID3D11PixelShader *ps;
+     ID3D11Buffer *ps_cb;
+     ID3D11Buffer *ib;
+@@ -570,8 +573,20 @@
+         size_t arc_vertex_count;
+     } fill;
+ 
++    /* Altium-on-Wine kit: Direct3D buffers for the fill/outline data, created on first draw
++     * and reused while the data size is unchanged. */
+     struct
+     {
++        ID3D11Device1 *device;
++        struct
++        {
++            ID3D11Buffer *buffer;
++            UINT size;
++        } slots[10];
++    } d3d_cache;
++
++    struct
++    {
+         struct d2d_outline_vertex *vertices;
+         size_t vertices_size;
+         size_t vertex_count;
+@@ -684,9 +699,13 @@
+     ID3D10Blob *precompiled_shape_ps;
+ 
+     struct d2d_indexed_objects shaders;
++
++    struct d2d_glyph_cache *glyph_cache; /* Altium-on-Wine kit: see device.c */
+ };
+ 
+ struct d2d_device *unsafe_impl_from_ID2D1Device(ID2D1Device1 *iface);
++void d2d_factory_restore_app_states(CRITICAL_SECTION *factory_cs);
++void d2d_device_glyph_cache_free(struct d2d_device *device);
+ HRESULT d2d_device_add_indexed_object(struct d2d_indexed_objects *objects, const GUID *id,
+         IUnknown *object);
+ BOOL d2d_device_get_indexed_object(struct d2d_indexed_objects *objects, const GUID *id,
+--- a/dlls/d2d1/device.c
++++ b/dlls/d2d1/device.c
+@@ -116,6 +116,151 @@
+     --stack->count;
+ }
+ 
++/* Altium-on-Wine kit: Wine swapped the whole D3D11 device context state in and out around
++ * every single primitive (2 SwapDeviceContextState calls per draw). Under DXVK each swap
++ * rebinds and revalidates everything, and apps like Altium issue thousands of primitives per
++ * frame, so that alone cost ~150 ms per schematic redraw. Like native D2D, keep our state
++ * bound from the first draw until control goes back to the application (EndDraw, Flush,
++ * GDI interop, SetTarget, destruction, and ID2D1Multithread::Enter for apps that use the
++ * device from other threads), and only swap there. A small registry ensures that only one
++ * D2D context at a time owns a given D3D device's state. All swaps happen with the
++ * context's factory lock (if multithreaded) and d2d_state_cs held.
++ * WINE_D2D_LAZY_STATE=0 restores the original per-draw behaviour. */
++static CRITICAL_SECTION d2d_state_cs;
++static CRITICAL_SECTION_DEBUG d2d_state_cs_debug =
++{
++    0, 0, &d2d_state_cs,
++    { &d2d_state_cs_debug.ProcessLocksList, &d2d_state_cs_debug.ProcessLocksList },
++      0, 0, { (DWORD_PTR)(__FILE__ ": d2d_state_cs") }
++};
++static CRITICAL_SECTION d2d_state_cs = { &d2d_state_cs_debug, -1, 0, 0, 0, 0 };
++static struct
++{
++    ID3D11Device1 *device;
++    struct d2d_device_context *context;
++} d2d_state_owners[32];
++
++static BOOL d2d_lazy_state_enabled(void)
++{
++    static LONG enabled = -1;
++
++    if (enabled == -1)
++    {
++        WCHAR buffer[8];
++        DWORD len = GetEnvironmentVariableW(L"WINE_D2D_LAZY_STATE", buffer, ARRAY_SIZE(buffer));
++        InterlockedExchange(&enabled, !(len && len < ARRAY_SIZE(buffer) && buffer[0] == '0'));
++    }
++    return enabled;
++}
++
++/* d2d_state_cs held, and context->cs (if any) held by the caller. */
++static void d2d_device_context_restore_app_state_locked(struct d2d_device_context *context)
++{
++    ID3D11DeviceContext1 *d3d_context;
++    unsigned int i;
++
++    if (!context->d2d_state_active)
++        return;
++
++    ID3D11Device1_GetImmediateContext1(context->d3d_device, &d3d_context);
++    ID3D11DeviceContext1_SwapDeviceContextState(d3d_context, context->app_state, NULL);
++    ID3D11DeviceContext1_Release(d3d_context);
++    if (context->app_state)
++        ID3DDeviceContextState_Release(context->app_state);
++    context->app_state = NULL;
++    context->d2d_state_active = FALSE;
++
++    for (i = 0; i < ARRAY_SIZE(d2d_state_owners); ++i)
++    {
++        if (d2d_state_owners[i].context == context)
++        {
++            d2d_state_owners[i].context = NULL;
++            d2d_state_owners[i].device = NULL;
++        }
++    }
++}
++
++static void d2d_device_context_restore_app_state(struct d2d_device_context *context)
++{
++    if (!context->d2d_state_active)
++        return;
++
++    if (context->cs)
++        EnterCriticalSection(context->cs);
++    EnterCriticalSection(&d2d_state_cs);
++    d2d_device_context_restore_app_state_locked(context);
++    LeaveCriticalSection(&d2d_state_cs);
++    if (context->cs)
++        LeaveCriticalSection(context->cs);
++}
++
++/* Called from ID2D1Multithread::Enter with the factory lock held: give the D3D device back
++ * to the application in its own state before it uses it. */
++void d2d_factory_restore_app_states(CRITICAL_SECTION *factory_cs)
++{
++    unsigned int i;
++
++    EnterCriticalSection(&d2d_state_cs);
++    for (i = 0; i < ARRAY_SIZE(d2d_state_owners); ++i)
++    {
++        struct d2d_device_context *context = d2d_state_owners[i].context;
++
++        if (context && context->cs == factory_cs)
++            d2d_device_context_restore_app_state_locked(context);
++    }
++    LeaveCriticalSection(&d2d_state_cs);
++}
++
++/* Called from d2d_device_context_draw with render_target->cs (if any) held. Returns FALSE
++ * if our state couldn't be kept bound; the caller then swaps around this draw only. */
++static BOOL d2d_device_context_activate_state(struct d2d_device_context *context, ID3D11DeviceContext1 *d3d_context)
++{
++    unsigned int i, slot = ARRAY_SIZE(d2d_state_owners);
++    BOOL ret = FALSE;
++
++    if (context->d2d_state_active)
++        return TRUE;
++    if (!d2d_lazy_state_enabled())
++        return FALSE;
++
++    EnterCriticalSection(&d2d_state_cs);
++    for (i = 0; i < ARRAY_SIZE(d2d_state_owners); ++i)
++    {
++        struct d2d_device_context *other = d2d_state_owners[i].context;
++
++        if (other && d2d_state_owners[i].device == context->d3d_device)
++        {
++            /* Another context owns this device's state. Its lock may be a different factory
++             * lock; don't block on it (lock order), just use per-draw swapping this time. */
++            if (other->cs && other->cs != context->cs && !TryEnterCriticalSection(other->cs))
++                goto done;
++            d2d_device_context_restore_app_state_locked(other);
++            if (other->cs && other->cs != context->cs)
++                LeaveCriticalSection(other->cs);
++        }
++    }
++    for (i = 0; i < ARRAY_SIZE(d2d_state_owners); ++i)
++    {
++        if (!d2d_state_owners[i].context)
++        {
++            slot = i;
++            break;
++        }
++    }
++    if (slot == ARRAY_SIZE(d2d_state_owners))
++        goto done;
++
++    ID3D11DeviceContext1_SwapDeviceContextState(d3d_context, context->d3d_state, &context->app_state);
++    context->d2d_state_active = TRUE;
++    d2d_state_owners[slot].device = context->d3d_device;
++    d2d_state_owners[slot].context = context;
++    ret = TRUE;
++
++done:
++    LeaveCriticalSection(&d2d_state_cs);
++    return ret;
++}
++
+ static void d2d_device_context_draw(struct d2d_device_context *render_target, enum d2d_shape_type shape_type,
+         ID3D11Buffer *ib, unsigned int index_count, ID3D11Buffer *vb, unsigned int vb_stride,
+         struct d2d_brush *brush, struct d2d_brush *opacity_brush)
+@@ -140,7 +285,10 @@
+         EnterCriticalSection(render_target->cs);
+ 
+     ID3D11Device1_GetImmediateContext1(device, &context);
+-    ID3D11DeviceContext1_SwapDeviceContextState(context, render_target->d3d_state, &prev_state);
++    if (d2d_device_context_activate_state(render_target, context))
++        prev_state = NULL;
++    else
++        ID3D11DeviceContext1_SwapDeviceContextState(context, render_target->d3d_state, &prev_state);
+ 
+     ID3D11DeviceContext1_IASetInputLayout(context, shape_resources->il);
+     ID3D11DeviceContext1_IASetPrimitiveTopology(context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+@@ -189,9 +337,12 @@
+     else
+         ID3D11DeviceContext1_Draw(context, index_count, 0);
+ 
+-    ID3D11DeviceContext1_SwapDeviceContextState(context, prev_state, NULL);
++    if (prev_state)
++    {
++        ID3D11DeviceContext1_SwapDeviceContextState(context, prev_state, NULL);
++        ID3DDeviceContextState_Release(prev_state);
++    }
+     ID3D11DeviceContext1_Release(context);
+-    ID3DDeviceContextState_Release(prev_state);
+ 
+     if (render_target->cs)
+         LeaveCriticalSection(render_target->cs);
+@@ -270,6 +421,7 @@
+     {
+         unsigned int i, j, k;
+ 
++        d2d_device_context_restore_app_state(context);
+         d2d_clip_stack_cleanup(&context->clip_stack);
+         IDWriteRenderingParams_Release(context->default_text_rendering_params);
+         if (context->text_rendering_params)
+@@ -282,6 +434,7 @@
+         ID3D11Buffer_Release(context->ps_cb);
+         ID3D11PixelShader_Release(context->ps);
+         ID3D11Buffer_Release(context->vs_cb);
++        if (context->unit_rect) ID2D1RectangleGeometry_Release(context->unit_rect);
+         for (i = 0; i < D2D_SHAPE_TYPE_COUNT; ++i)
+         {
+             ID3D11VertexShader_Release(context->shape_resources[i].vs);
+@@ -649,6 +802,10 @@
+     ID2D1RectangleGeometry_Release(geometry);
+ }
+ 
++static void d2d_device_context_fill_geometry_ex(struct d2d_device_context *render_target,
++        const struct d2d_geometry *geometry, const D2D1_MATRIX_3X2_F *transform, struct d2d_brush *brush,
++        struct d2d_brush *opacity_brush);
++
+ static void STDMETHODCALLTYPE d2d_device_context_FillRectangle(ID2D1DeviceContext6 *iface,
+         const D2D1_RECT_F *rect, ID2D1Brush *brush)
+ {
+@@ -667,6 +824,37 @@
+         return;
+     }
+ 
++    /* Altium-on-Wine kit: fill rectangles with one cached unit square per context, placed by
++     * the geometry transform, instead of building a new geometry and buffers for each one. */
++    if (context->target.type == D2D_TARGET_UNKNOWN)
++    {
++        d2d_device_context_set_error(context, D2DERR_WRONG_STATE);
++        return;
++    }
++    if (!context->unit_rect)
++    {
++        static const D2D1_RECT_F unit = {0.0f, 0.0f, 1.0f, 1.0f};
++        ID2D1RectangleGeometry *unit_rect;
++
++        if (context->cs) EnterCriticalSection(context->cs);
++        if (!context->unit_rect && SUCCEEDED(ID2D1Factory_CreateRectangleGeometry(context->factory, &unit, &unit_rect)))
++            context->unit_rect = unit_rect;
++        if (context->cs) LeaveCriticalSection(context->cs);
++    }
++    if (context->unit_rect && isfinite(rect->right - rect->left) && isfinite(rect->bottom - rect->top)
++            && rect->left + (rect->right - rect->left) == rect->right
++            && rect->top + (rect->bottom - rect->top) == rect->bottom)
++    {
++        D2D1_MATRIX_3X2_F m;
++
++        m._11 = rect->right - rect->left; m._12 = 0.0f;
++        m._21 = 0.0f; m._22 = rect->bottom - rect->top;
++        m._31 = rect->left; m._32 = rect->top;
++        d2d_device_context_fill_geometry_ex(context, unsafe_impl_from_ID2D1Geometry((ID2D1Geometry *)context->unit_rect),
++                &m, unsafe_impl_from_ID2D1Brush(brush), NULL);
++        return;
++    }
++
+     if (FAILED(hr = ID2D1Factory_CreateRectangleGeometry(context->factory, rect, &geometry)))
+     {
+         ERR("Failed to create geometry, hr %#lx.\n", hr);
+@@ -851,11 +1039,71 @@
+     return S_OK;
+ }
+ 
+-static void d2d_device_context_draw_geometry(struct d2d_device_context *render_target,
+-        const struct d2d_geometry *geometry, struct d2d_brush *brush, float stroke_width)
++/* Altium-on-Wine kit: return a buffer (with a reference the caller releases) holding
++ * geometry data. Buffers are cached per geometry for the first device that draws it and
++ * recreated if the data size changes (e.g. a path drawn before it was closed). */
++enum d2d_geometry_buffer
+ {
++    D2D_GB_FILL_IB, D2D_GB_FILL_VB, D2D_GB_FILL_BEZIER_VB, D2D_GB_FILL_ARC_VB,
++    D2D_GB_OUTLINE_IB, D2D_GB_OUTLINE_VB, D2D_GB_OUTLINE_BEZIER_IB, D2D_GB_OUTLINE_BEZIER_VB,
++    D2D_GB_OUTLINE_ARC_IB, D2D_GB_OUTLINE_ARC_VB,
++};
++
++static CRITICAL_SECTION d2d_buffer_cache_cs;
++static CRITICAL_SECTION_DEBUG d2d_buffer_cache_cs_debug =
++{
++    0, 0, &d2d_buffer_cache_cs,
++    { &d2d_buffer_cache_cs_debug.ProcessLocksList, &d2d_buffer_cache_cs_debug.ProcessLocksList },
++      0, 0, { (DWORD_PTR)(__FILE__ ": d2d_buffer_cache_cs") }
++};
++static CRITICAL_SECTION d2d_buffer_cache_cs = { &d2d_buffer_cache_cs_debug, -1, 0, 0, 0, 0 };
++
++static ID3D11Buffer *d2d_geometry_get_buffer(struct d2d_device_context *render_target,
++        const struct d2d_geometry *geometry, enum d2d_geometry_buffer index, const void *data, UINT size, UINT bind)
++{
++    struct d2d_geometry *cache = (struct d2d_geometry *)geometry;
+     D3D11_SUBRESOURCE_DATA buffer_data;
+     D3D11_BUFFER_DESC buffer_desc;
++    ID3D11Buffer *buffer = NULL;
++    BOOL cacheable;
++
++    EnterCriticalSection(&d2d_buffer_cache_cs);
++    if (!cache->d3d_cache.device)
++        cache->d3d_cache.device = render_target->d3d_device;
++    cacheable = cache->d3d_cache.device == render_target->d3d_device;
++    if (cacheable && cache->d3d_cache.slots[index].buffer && cache->d3d_cache.slots[index].size == size)
++    {
++        buffer = cache->d3d_cache.slots[index].buffer;
++        ID3D11Buffer_AddRef(buffer);
++        LeaveCriticalSection(&d2d_buffer_cache_cs);
++        return buffer;
++    }
++
++    buffer_desc.ByteWidth = size;
++    buffer_desc.Usage = D3D11_USAGE_IMMUTABLE;
++    buffer_desc.BindFlags = bind;
++    buffer_desc.CPUAccessFlags = 0;
++    buffer_desc.MiscFlags = 0;
++    buffer_data.pSysMem = data;
++    buffer_data.SysMemPitch = 0;
++    buffer_data.SysMemSlicePitch = 0;
++    if (FAILED(ID3D11Device1_CreateBuffer(render_target->d3d_device, &buffer_desc, &buffer_data, &buffer)))
++        buffer = NULL;
++    else if (cacheable)
++    {
++        if (cache->d3d_cache.slots[index].buffer)
++            ID3D11Buffer_Release(cache->d3d_cache.slots[index].buffer);
++        cache->d3d_cache.slots[index].buffer = buffer;
++        cache->d3d_cache.slots[index].size = size;
++        ID3D11Buffer_AddRef(buffer);
++    }
++    LeaveCriticalSection(&d2d_buffer_cache_cs);
++    return buffer;
++}
++
++static void d2d_device_context_draw_geometry(struct d2d_device_context *render_target,
++        const struct d2d_geometry *geometry, struct d2d_brush *brush, float stroke_width)
++{
+     ID3D11Buffer *ib, *vb;
+     HRESULT hr;
+ 
+@@ -871,32 +1119,18 @@
+         return;
+     }
+ 
+-    buffer_desc.Usage = D3D11_USAGE_DEFAULT;
+-    buffer_desc.CPUAccessFlags = 0;
+-    buffer_desc.MiscFlags = 0;
+-
+-    buffer_data.SysMemPitch = 0;
+-    buffer_data.SysMemSlicePitch = 0;
+-
+     if (geometry->outline.face_count)
+     {
+-        buffer_desc.ByteWidth = geometry->outline.face_count * sizeof(*geometry->outline.faces);
+-        buffer_desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+-        buffer_data.pSysMem = geometry->outline.faces;
+-
+-        if (FAILED(hr = ID3D11Device1_CreateBuffer(render_target->d3d_device, &buffer_desc, &buffer_data, &ib)))
++        if (!(ib = d2d_geometry_get_buffer(render_target, geometry, D2D_GB_OUTLINE_IB, geometry->outline.faces,
++                geometry->outline.face_count * sizeof(*geometry->outline.faces), D3D11_BIND_INDEX_BUFFER)))
+         {
+-            WARN("Failed to create index buffer, hr %#lx.\n", hr);
++            WARN("Failed to create index buffer.\n");
+             return;
+         }
+-
+-        buffer_desc.ByteWidth = geometry->outline.vertex_count * sizeof(*geometry->outline.vertices);
+-        buffer_desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+-        buffer_data.pSysMem = geometry->outline.vertices;
+-
+-        if (FAILED(hr = ID3D11Device1_CreateBuffer(render_target->d3d_device, &buffer_desc, &buffer_data, &vb)))
++        if (!(vb = d2d_geometry_get_buffer(render_target, geometry, D2D_GB_OUTLINE_VB, geometry->outline.vertices,
++                geometry->outline.vertex_count * sizeof(*geometry->outline.vertices), D3D11_BIND_VERTEX_BUFFER)))
+         {
+-            ERR("Failed to create vertex buffer, hr %#lx.\n", hr);
++            ERR("Failed to create vertex buffer.\n");
+             ID3D11Buffer_Release(ib);
+             return;
+         }
+@@ -910,23 +1144,18 @@
+ 
+     if (geometry->outline.bezier_face_count)
+     {
+-        buffer_desc.ByteWidth = geometry->outline.bezier_face_count * sizeof(*geometry->outline.bezier_faces);
+-        buffer_desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+-        buffer_data.pSysMem = geometry->outline.bezier_faces;
+-
+-        if (FAILED(hr = ID3D11Device1_CreateBuffer(render_target->d3d_device, &buffer_desc, &buffer_data, &ib)))
++        if (!(ib = d2d_geometry_get_buffer(render_target, geometry, D2D_GB_OUTLINE_BEZIER_IB,
++                geometry->outline.bezier_faces, geometry->outline.bezier_face_count * sizeof(*geometry->outline.bezier_faces),
++                D3D11_BIND_INDEX_BUFFER)))
+         {
+-            WARN("Failed to create curves index buffer, hr %#lx.\n", hr);
++            WARN("Failed to create curves index buffer.\n");
+             return;
+         }
+-
+-        buffer_desc.ByteWidth = geometry->outline.bezier_count * sizeof(*geometry->outline.beziers);
+-        buffer_desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+-        buffer_data.pSysMem = geometry->outline.beziers;
+-
+-        if (FAILED(hr = ID3D11Device1_CreateBuffer(render_target->d3d_device, &buffer_desc, &buffer_data, &vb)))
++        if (!(vb = d2d_geometry_get_buffer(render_target, geometry, D2D_GB_OUTLINE_BEZIER_VB,
++                geometry->outline.beziers, geometry->outline.bezier_count * sizeof(*geometry->outline.beziers),
++                D3D11_BIND_VERTEX_BUFFER)))
+         {
+-            ERR("Failed to create curves vertex buffer, hr %#lx.\n", hr);
++            ERR("Failed to create curves vertex buffer.\n");
+             ID3D11Buffer_Release(ib);
+             return;
+         }
+@@ -941,23 +1170,18 @@
+ 
+     if (geometry->outline.arc_face_count)
+     {
+-        buffer_desc.ByteWidth = geometry->outline.arc_face_count * sizeof(*geometry->outline.arc_faces);
+-        buffer_desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+-        buffer_data.pSysMem = geometry->outline.arc_faces;
+-
+-        if (FAILED(hr = ID3D11Device1_CreateBuffer(render_target->d3d_device, &buffer_desc, &buffer_data, &ib)))
++        if (!(ib = d2d_geometry_get_buffer(render_target, geometry, D2D_GB_OUTLINE_ARC_IB,
++                geometry->outline.arc_faces, geometry->outline.arc_face_count * sizeof(*geometry->outline.arc_faces),
++                D3D11_BIND_INDEX_BUFFER)))
+         {
+-            WARN("Failed to create arcs index buffer, hr %#lx.\n", hr);
++            WARN("Failed to create arcs index buffer.\n");
+             return;
+         }
+-
+-        buffer_desc.ByteWidth = geometry->outline.arc_count * sizeof(*geometry->outline.arcs);
+-        buffer_desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+-        buffer_data.pSysMem = geometry->outline.arcs;
+-
+-        if (FAILED(hr = ID3D11Device1_CreateBuffer(render_target->d3d_device, &buffer_desc, &buffer_data, &vb)))
++        if (!(vb = d2d_geometry_get_buffer(render_target, geometry, D2D_GB_OUTLINE_ARC_VB,
++                geometry->outline.arcs, geometry->outline.arc_count * sizeof(*geometry->outline.arcs),
++                D3D11_BIND_VERTEX_BUFFER)))
+         {
+-            ERR("Failed to create arcs vertex buffer, hr %#lx.\n", hr);
++            ERR("Failed to create arcs vertex buffer.\n");
+             ID3D11Buffer_Release(ib);
+             return;
+         }
+@@ -1011,22 +1235,14 @@
+     d2d_device_context_draw_geometry(context, geometry_impl, brush_impl, stroke_width);
+ }
+ 
+-static void d2d_device_context_fill_geometry(struct d2d_device_context *render_target,
+-        const struct d2d_geometry *geometry, struct d2d_brush *brush, struct d2d_brush *opacity_brush)
++static void d2d_device_context_fill_geometry_ex(struct d2d_device_context *render_target,
++        const struct d2d_geometry *geometry, const D2D1_MATRIX_3X2_F *transform, struct d2d_brush *brush,
++        struct d2d_brush *opacity_brush)
+ {
+-    D3D11_SUBRESOURCE_DATA buffer_data;
+-    D3D11_BUFFER_DESC buffer_desc;
+     ID3D11Buffer *ib, *vb;
+     HRESULT hr;
+ 
+-    buffer_desc.Usage = D3D11_USAGE_DEFAULT;
+-    buffer_desc.CPUAccessFlags = 0;
+-    buffer_desc.MiscFlags = 0;
+-
+-    buffer_data.SysMemPitch = 0;
+-    buffer_data.SysMemSlicePitch = 0;
+-
+-    if (FAILED(hr = d2d_device_context_update_vs_cb(render_target, &geometry->transform, 0.0f)))
++    if (FAILED(hr = d2d_device_context_update_vs_cb(render_target, transform, 0.0f)))
+     {
+         WARN("Failed to update vs constant buffer, hr %#lx.\n", hr);
+         return;
+@@ -1040,23 +1256,16 @@
+ 
+     if (geometry->fill.face_count)
+     {
+-        buffer_desc.ByteWidth = geometry->fill.face_count * sizeof(*geometry->fill.faces);
+-        buffer_desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+-        buffer_data.pSysMem = geometry->fill.faces;
+-
+-        if (FAILED(hr = ID3D11Device1_CreateBuffer(render_target->d3d_device, &buffer_desc, &buffer_data, &ib)))
++        if (!(ib = d2d_geometry_get_buffer(render_target, geometry, D2D_GB_FILL_IB, geometry->fill.faces,
++                geometry->fill.face_count * sizeof(*geometry->fill.faces), D3D11_BIND_INDEX_BUFFER)))
+         {
+-            WARN("Failed to create index buffer, hr %#lx.\n", hr);
++            WARN("Failed to create index buffer.\n");
+             return;
+         }
+-
+-        buffer_desc.ByteWidth = geometry->fill.vertex_count * sizeof(*geometry->fill.vertices);
+-        buffer_desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+-        buffer_data.pSysMem = geometry->fill.vertices;
+-
+-        if (FAILED(hr = ID3D11Device1_CreateBuffer(render_target->d3d_device, &buffer_desc, &buffer_data, &vb)))
++        if (!(vb = d2d_geometry_get_buffer(render_target, geometry, D2D_GB_FILL_VB, geometry->fill.vertices,
++                geometry->fill.vertex_count * sizeof(*geometry->fill.vertices), D3D11_BIND_VERTEX_BUFFER)))
+         {
+-            ERR("Failed to create vertex buffer, hr %#lx.\n", hr);
++            ERR("Failed to create vertex buffer.\n");
+             ID3D11Buffer_Release(ib);
+             return;
+         }
+@@ -1070,13 +1279,11 @@
+ 
+     if (geometry->fill.bezier_vertex_count)
+     {
+-        buffer_desc.ByteWidth = geometry->fill.bezier_vertex_count * sizeof(*geometry->fill.bezier_vertices);
+-        buffer_desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+-        buffer_data.pSysMem = geometry->fill.bezier_vertices;
+-
+-        if (FAILED(hr = ID3D11Device1_CreateBuffer(render_target->d3d_device, &buffer_desc, &buffer_data, &vb)))
++        if (!(vb = d2d_geometry_get_buffer(render_target, geometry, D2D_GB_FILL_BEZIER_VB,
++                geometry->fill.bezier_vertices, geometry->fill.bezier_vertex_count * sizeof(*geometry->fill.bezier_vertices),
++                D3D11_BIND_VERTEX_BUFFER)))
+         {
+-            ERR("Failed to create curves vertex buffer, hr %#lx.\n", hr);
++            ERR("Failed to create curves vertex buffer.\n");
+             return;
+         }
+ 
+@@ -1088,13 +1295,11 @@
+ 
+     if (geometry->fill.arc_vertex_count)
+     {
+-        buffer_desc.ByteWidth = geometry->fill.arc_vertex_count * sizeof(*geometry->fill.arc_vertices);
+-        buffer_desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+-        buffer_data.pSysMem = geometry->fill.arc_vertices;
+-
+-        if (FAILED(hr = ID3D11Device1_CreateBuffer(render_target->d3d_device, &buffer_desc, &buffer_data, &vb)))
++        if (!(vb = d2d_geometry_get_buffer(render_target, geometry, D2D_GB_FILL_ARC_VB,
++                geometry->fill.arc_vertices, geometry->fill.arc_vertex_count * sizeof(*geometry->fill.arc_vertices),
++                D3D11_BIND_VERTEX_BUFFER)))
+         {
+-            ERR("Failed to create arc vertex buffer, hr %#lx.\n", hr);
++            ERR("Failed to create arc vertex buffer.\n");
+             return;
+         }
+ 
+@@ -1104,6 +1309,12 @@
+ 
+         ID3D11Buffer_Release(vb);
+     }
++}
++
++static void d2d_device_context_fill_geometry(struct d2d_device_context *render_target,
++        const struct d2d_geometry *geometry, struct d2d_brush *brush, struct d2d_brush *opacity_brush)
++{
++    d2d_device_context_fill_geometry_ex(render_target, geometry, &geometry->transform, brush, opacity_brush);
+ }
+ 
+ static void STDMETHODCALLTYPE d2d_device_context_FillGeometry(ID2D1DeviceContext6 *iface,
+@@ -1351,7 +1562,139 @@
+     return prev_antialias_mode;
+ }
+ 
+-static HRESULT d2d_device_context_get_glyph_run_geometry(struct d2d_device_context *context,
++/* Altium-on-Wine kit: cache glyph run outline geometries. Building one means a DirectWrite
++ * outline query per glyph plus CPU triangulation, and apps drawing lots of text (CAD
++ * schematics) redraw the same runs every frame. The geometry is in run-local coordinates
++ * (the baseline origin and transform are applied when drawing), so it can be reused.
++ * The cache belongs to the D2D device (freed with it), holds at most
++ * GLYPH_GEOMETRY_MAX_GLYPHS glyphs in total and skips long runs. */
++struct glyph_geometry_entry
++{
++    struct list entry;
++    unsigned int hash;
++    IDWriteFontFace *font_face;
++    float em_size;
++    BOOL sideways;
++    BOOL rtl;
++    UINT32 count;
++    UINT16 *indices;
++    float *advances;
++    DWRITE_GLYPH_OFFSET *offsets;
++    ID2D1PathGeometry *geometry;
++};
++
++#define GLYPH_GEOMETRY_BUCKETS 4096
++#define GLYPH_GEOMETRY_MAX_GLYPHS 65536
++#define GLYPH_GEOMETRY_MAX_RUN 256
++
++struct d2d_glyph_cache
++{
++    CRITICAL_SECTION cs;
++    unsigned int glyph_count;
++    struct list buckets[GLYPH_GEOMETRY_BUCKETS];
++};
++
++static CRITICAL_SECTION glyph_cache_create_cs;
++static CRITICAL_SECTION_DEBUG glyph_cache_create_cs_debug =
++{
++    0, 0, &glyph_cache_create_cs,
++    { &glyph_cache_create_cs_debug.ProcessLocksList, &glyph_cache_create_cs_debug.ProcessLocksList },
++      0, 0, { (DWORD_PTR)(__FILE__ ": glyph_cache_create_cs") }
++};
++static CRITICAL_SECTION glyph_cache_create_cs = { &glyph_cache_create_cs_debug, -1, 0, 0, 0, 0 };
++
++static unsigned int glyph_hash_bytes(unsigned int hash, const void *data, size_t size)
++{
++    const unsigned char *p = data;
++    while (size--) hash = (hash ^ *p++) * 16777619u;
++    return hash;
++}
++
++static unsigned int glyph_run_hash(const DWRITE_GLYPH_RUN *run)
++{
++    unsigned int hash = 2166136261u, flags = (run->isSideways ? 1 : 0) | ((run->bidiLevel & 1) << 1);
++
++    hash = glyph_hash_bytes(hash, &run->fontFace, sizeof(run->fontFace));
++    hash = glyph_hash_bytes(hash, &run->fontEmSize, sizeof(run->fontEmSize));
++    hash = glyph_hash_bytes(hash, &flags, sizeof(flags));
++    hash = glyph_hash_bytes(hash, run->glyphIndices, run->glyphCount * sizeof(*run->glyphIndices));
++    if (run->glyphAdvances)
++        hash = glyph_hash_bytes(hash, run->glyphAdvances, run->glyphCount * sizeof(*run->glyphAdvances));
++    if (run->glyphOffsets)
++        hash = glyph_hash_bytes(hash, run->glyphOffsets, run->glyphCount * sizeof(*run->glyphOffsets));
++    return hash;
++}
++
++static BOOL glyph_entry_matches(const struct glyph_geometry_entry *e, unsigned int hash, const DWRITE_GLYPH_RUN *run)
++{
++    UINT32 n = run->glyphCount;
++
++    return e->hash == hash && e->font_face == run->fontFace && e->em_size == run->fontEmSize
++            && e->sideways == !!run->isSideways && e->rtl == (run->bidiLevel & 1) && e->count == n
++            && !memcmp(e->indices, run->glyphIndices, n * sizeof(*e->indices))
++            && !e->advances == !run->glyphAdvances
++            && (!e->advances || !memcmp(e->advances, run->glyphAdvances, n * sizeof(*e->advances)))
++            && !e->offsets == !run->glyphOffsets
++            && (!e->offsets || !memcmp(e->offsets, run->glyphOffsets, n * sizeof(*e->offsets)));
++}
++
++static void glyph_entry_free(struct glyph_geometry_entry *e)
++{
++    ID2D1PathGeometry_Release(e->geometry);
++    IDWriteFontFace_Release(e->font_face);
++    free(e->indices);
++    free(e->advances);
++    free(e->offsets);
++    free(e);
++}
++
++static void glyph_cache_flush(struct d2d_glyph_cache *cache)
++{
++    struct glyph_geometry_entry *e, *next;
++    unsigned int i;
++
++    for (i = 0; i < GLYPH_GEOMETRY_BUCKETS; ++i)
++    {
++        LIST_FOR_EACH_ENTRY_SAFE(e, next, &cache->buckets[i], struct glyph_geometry_entry, entry)
++        {
++            list_remove(&e->entry);
++            glyph_entry_free(e);
++        }
++    }
++    cache->glyph_count = 0;
++}
++
++void d2d_device_glyph_cache_free(struct d2d_device *device)
++{
++    struct d2d_glyph_cache *cache = device->glyph_cache;
++
++    if (!cache) return;
++    glyph_cache_flush(cache);
++    DeleteCriticalSection(&cache->cs);
++    free(cache);
++    device->glyph_cache = NULL;
++}
++
++static struct d2d_glyph_cache *d2d_device_get_glyph_cache(struct d2d_device *device)
++{
++    struct d2d_glyph_cache *cache;
++    unsigned int i;
++
++    if (!device) return NULL;
++    if ((cache = device->glyph_cache)) return cache;
++
++    EnterCriticalSection(&glyph_cache_create_cs);
++    if (!(cache = device->glyph_cache) && (cache = calloc(1, sizeof(*cache))))
++    {
++        InitializeCriticalSection(&cache->cs);
++        for (i = 0; i < GLYPH_GEOMETRY_BUCKETS; ++i) list_init(&cache->buckets[i]);
++        device->glyph_cache = cache;
++    }
++    LeaveCriticalSection(&glyph_cache_create_cs);
++    return cache;
++}
++
++static HRESULT d2d_device_context_build_glyph_run_geometry(struct d2d_device_context *context,
+         const DWRITE_GLYPH_RUN *glyph_run, ID2D1PathGeometry **result)
+ {
+     ID2D1PathGeometry *geometry;
+@@ -1387,6 +1730,70 @@
+         *result = geometry;
+     else
+         ID2D1PathGeometry_Release(geometry);
++
++    return hr;
++}
++
++static HRESULT d2d_device_context_get_glyph_run_geometry(struct d2d_device_context *context,
++        const DWRITE_GLYPH_RUN *glyph_run, ID2D1PathGeometry **result)
++{
++    struct d2d_glyph_cache *cache;
++    struct glyph_geometry_entry *e;
++    unsigned int hash;
++    struct list *bucket;
++    UINT32 n = glyph_run->glyphCount;
++    HRESULT hr;
++
++    *result = NULL;
++    if (!glyph_run->fontFace || !glyph_run->glyphIndices || !n || n > GLYPH_GEOMETRY_MAX_RUN
++            || !isfinite(glyph_run->fontEmSize) || !(cache = d2d_device_get_glyph_cache(context->device)))
++        return d2d_device_context_build_glyph_run_geometry(context, glyph_run, result);
++
++    hash = glyph_run_hash(glyph_run);
++    bucket = &cache->buckets[hash % GLYPH_GEOMETRY_BUCKETS];
++    EnterCriticalSection(&cache->cs);
++    LIST_FOR_EACH_ENTRY(e, bucket, struct glyph_geometry_entry, entry)
++    {
++        if (glyph_entry_matches(e, hash, glyph_run))
++        {
++            ID2D1PathGeometry_AddRef(e->geometry);
++            *result = e->geometry;
++            LeaveCriticalSection(&cache->cs);
++            return S_OK;
++        }
++    }
++    LeaveCriticalSection(&cache->cs);
++
++    if (FAILED(hr = d2d_device_context_build_glyph_run_geometry(context, glyph_run, result)))
++        return hr;
++
++    if (!(e = calloc(1, sizeof(*e)))) return hr;
++    e->hash = hash;
++    e->font_face = glyph_run->fontFace;
++    e->em_size = glyph_run->fontEmSize;
++    e->sideways = !!glyph_run->isSideways;
++    e->rtl = glyph_run->bidiLevel & 1;
++    e->count = n;
++    e->indices = malloc(n * sizeof(*e->indices));
++    if (glyph_run->glyphAdvances) e->advances = malloc(n * sizeof(*e->advances));
++    if (glyph_run->glyphOffsets) e->offsets = malloc(n * sizeof(*e->offsets));
++    if (!e->indices || (glyph_run->glyphAdvances && !e->advances) || (glyph_run->glyphOffsets && !e->offsets))
++    {
++        free(e->indices); free(e->advances); free(e->offsets); free(e);
++        return hr;
++    }
++    memcpy(e->indices, glyph_run->glyphIndices, n * sizeof(*e->indices));
++    if (e->advances) memcpy(e->advances, glyph_run->glyphAdvances, n * sizeof(*e->advances));
++    if (e->offsets) memcpy(e->offsets, glyph_run->glyphOffsets, n * sizeof(*e->offsets));
++    IDWriteFontFace_AddRef(e->font_face);
++    ID2D1PathGeometry_AddRef(*result);
++    e->geometry = *result;
++
++    EnterCriticalSection(&cache->cs);
++    if (cache->glyph_count + n > GLYPH_GEOMETRY_MAX_GLYPHS) glyph_cache_flush(cache);
++    list_add_head(bucket, &e->entry);
++    cache->glyph_count += n;
++    LeaveCriticalSection(&cache->cs);
+ 
+     return hr;
+ }
+@@ -1862,6 +2269,8 @@
+     struct d2d_device_context *context = impl_from_ID2D1DeviceContext(iface);
+ 
+     FIXME("iface %p, tag1 %p, tag2 %p stub!\n", iface, tag1, tag2);
++
++    d2d_device_context_restore_app_state(context);
+ 
+     if (context->ops && context->ops->device_context_present)
+         context->ops->device_context_present(context->outer_unknown);
+@@ -2080,6 +2489,8 @@
+         *tag1 = context->error.tag1;
+     if (tag2)
+         *tag2 = context->error.tag2;
++
++    d2d_device_context_restore_app_state(context);
+ 
+     if (context->ops && context->ops->device_context_present)
+     {
+@@ -2568,6 +2979,8 @@
+ 
+     TRACE("iface %p, target %p.\n", iface, target);
+ 
++    d2d_device_context_restore_app_state(context);
++
+     if (!target)
+     {
+         d2d_device_context_reset_target(context);
+@@ -3691,6 +4104,8 @@
+     if (render_target->target.hdc)
+         return D2DERR_WRONG_STATE;
+ 
++    d2d_device_context_restore_app_state(render_target);
++
+     if (FAILED(hr = d2d_gdi_interop_get_surface(render_target, &surface)))
+         return hr;
+ 
+@@ -4570,6 +4985,7 @@
+ 
+     if (!refcount)
+     {
++        d2d_device_glyph_cache_free(device);
+         IDXGIDevice_Release(device->dxgi_device);
+         ID2D1Factory1_Release(device->factory);
+         d2d_device_indexed_objects_clear(&device->shaders);
+--- a/dlls/d2d1/factory.c
++++ b/dlls/d2d1/factory.c
+@@ -1303,6 +1303,9 @@
+     TRACE("%p.\n", iface);
+ 
+     EnterCriticalSection(&factory->cs);
++    /* Altium-on-Wine kit: D2D keeps its D3D state bound between draws; hand the device
++     * back in the application's state before it uses it from this thread. */
++    d2d_factory_restore_app_states(&factory->cs);
+ }
+ 
+ static void STDMETHODCALLTYPE d2d_factory_mt_Leave(ID2D1Multithread *iface)
+--- a/dlls/d2d1/geometry.c
++++ b/dlls/d2d1/geometry.c
+@@ -3247,6 +3247,8 @@
+ 
+ static void d2d_geometry_cleanup(struct d2d_geometry *geometry)
+ {
++    for (unsigned int i = 0; i < ARRAY_SIZE(geometry->d3d_cache.slots); ++i)
++        if (geometry->d3d_cache.slots[i].buffer) ID3D11Buffer_Release(geometry->d3d_cache.slots[i].buffer);
+     free(geometry->outline.arc_faces);
+     free(geometry->outline.arcs);
+     free(geometry->outline.bezier_faces);

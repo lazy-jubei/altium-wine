@@ -1,0 +1,42 @@
+Windows Registry Editor Version 5.00
+
+; Segoe UI isn't in the prefix. Without it, Altium's WPF panels (via DirectWrite) fall back
+; to a font that draws "-" as a box ("On-Demand", "On-Premise"). Map the family to Arial
+; (from winetricks corefonts).
+[HKEY_CURRENT_USER\Software\Wine\Fonts\Replacements]
+"Segoe UI"="Arial"
+"Segoe UI Semibold"="Arial"
+"Segoe UI Semilight"="Arial"
+"Segoe UI Light"="Arial"
+
+; Retina: let Wine draw at the Mac's full resolution (otherwise everything is rendered at
+; half resolution and upscaled, which makes schematic and PCB text jagged), and scale the
+; Windows UI to 200% so it stays a normal size.
+[HKEY_CURRENT_USER\Software\Wine\Mac Driver]
+"RetinaMode"="y"
+
+[HKEY_CURRENT_USER\Control Panel\Desktop]
+"LogPixels"=dword:000000c0
+
+; Direct3D 11 for Altium only: use DXVK-macOS (copied next to X2.EXE by `run`) instead
+; of Wine's wined3d, which can't reach the feature level Altium's editors need on macOS.
+[HKEY_CURRENT_USER\Software\Wine\AppDefaults\X2.EXE\DllOverrides]
+"d3d11"="native,builtin"
+"d3d10core"="native,builtin"
+
+; Microsoft Edge WebView2 (Altium's Home Page and web panels): its GPU process dies under
+; Wine and the browser quits ("GPU process isn't usable"). Altium passes its own arguments,
+; so the WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS variable is ignored; this policy isn't.
+; --no-sandbox: Wine doesn't enforce the Windows primitives (restricted tokens, integrity
+; levels, job limits) Chromium's sandbox is built on, so it can't protect anything here.
+; The browser only loads Altium's own pages and `run` ends it after 20 s.
+[HKEY_CURRENT_USER\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments]
+"X2.EXE"="--no-sandbox --disable-gpu --disable-gpu-compositing --in-process-gpu --disable-features=RendererCodeIntegrity,CalculateNativeWinOcclusion"
+
+[HKEY_LOCAL_MACHINE\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments]
+"X2.EXE"="--no-sandbox --disable-gpu --disable-gpu-compositing --in-process-gpu --disable-features=RendererCodeIntegrity,CalculateNativeWinOcclusion"
+
+; WPF windows (Open Project dialog, license page, ...) render through Direct3D 9 on Wine's
+; OpenGL backend and come out with black areas. Software rendering draws them correctly.
+[HKEY_CURRENT_USER\Software\Microsoft\Avalon.Graphics]
+"DisableHWAcceleration"=dword:00000001

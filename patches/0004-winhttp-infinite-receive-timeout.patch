@@ -1,0 +1,36 @@
+From: Altium-on-Wine kit
+Subject: winhttp: don't cap the response-header wait for apps that set an infinite receive timeout
+
+Modules: dlls/winhttp
+Base: wine-11.16
+
+When an app doesn't set WINHTTP_OPTION_RECEIVE_RESPONSE_TIMEOUT, Wine waits only 21 s for
+response headers. libgit2 (1.7.1 in Altium 26's Git extension) calls
+WinHttpSetTimeouts(request, -1, 60000, -1, -1) and nothing else, and Altium 365's Git
+server can take longer than 21 s to answer a git-upload-pack POST, so cloning a project
+failed with "failed to receive response". Requests whose receive timeout is infinite now
+wait for headers without a cap; everything else keeps Wine's 21 s default.
+
+Tested with a local server that delays headers 25 s: stock fails (error 10060) at 21.0 s,
+patched returns 200 at 25.0 s. winhttp notification tests are unchanged.
+
+--- a/dlls/winhttp/request.c
++++ b/dlls/winhttp/request.c
+@@ -2008,7 +2008,16 @@
+ 
+ static int get_receive_response_timeout( struct request *request )
+ {
+-    if (request->receive_response_timeout == -1) return ACTUAL_DEFAULT_RECEIVE_RESPONSE_TIMEOUT;
++    if (request->receive_response_timeout == -1)
++    {
++        /* Altium-on-Wine kit: an app that asked for an infinite receive timeout (e.g. libgit2,
++         * which calls WinHttpSetTimeouts( h, -1, 60000, -1, -1 )) gets no 21 s cap on the wait
++         * for response headers either. Altium 365's Git server can take longer than that to
++         * answer a git-upload-pack POST, and the clone then failed with "failed to receive
++         * response". Other apps keep Wine's default. */
++        if (!request->receive_timeout) return 0;
++        return ACTUAL_DEFAULT_RECEIVE_RESPONSE_TIMEOUT;
++    }
+     return request->receive_response_timeout;
+ }
+ 

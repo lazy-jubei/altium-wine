@@ -1,0 +1,25 @@
+Altium-on-Wine kit
+Copyright (c) 2026 lazy-jubei
+Original kit scripts and patches are licensed under GNU LGPL 2.1 or later.
+See LICENSE for the license text.
+
+Wine
+Copyright (c) 1993-2026 the Wine project authors.
+Wine and modifications to Wine are licensed under GNU LGPL 2.1 or later.
+Upstream source archives retain the complete AUTHORS and license notices.
+
+patches/0000-staging-winemac-no-flicker.patch
+Original Wine Staging patch by Ken Thomases (CodeWeavers), retained with its
+original author and commit metadata. GNU LGPL 2.1 or later.
+
+Screenshots of LimeSDR-USB
+The hardware design is by Lime Microsystems / the Myriad-RF project and is
+licensed under Creative Commons Attribution 3.0 Unported (CC BY 3.0).
+Source: https://github.com/myriadrf/LimeSDR-USB
+License: https://creativecommons.org/licenses/by/3.0/
+Screenshots depict the design opened in Altium Designer on macOS with Wine;
+the hardware design is not modified or redistributed by this kit.
+
+Altium Designer remains proprietary software. This repository and its releases
+contain no Altium installer, program binaries, license files, or extracted icon.
+Altium, Wine, CodeWeavers and Lime Microsystems do not endorse this project.

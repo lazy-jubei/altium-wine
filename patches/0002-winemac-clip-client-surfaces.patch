@@ -1,0 +1,282 @@
+From: Altium-on-Wine kit
+Subject: winemac.drv: clip child client surfaces to their visible region
+
+Modules: dlls/winemac.drv
+Base: wine-11.16 + wine-staging v11.16 winemac.drv-no-flicker-patch (0000-*.patch)
+
+A child window's GL/Vulkan/Metal client surface is a flat subview of the toplevel Cocoa
+window, drawn above everything Win32 paints, and it ignored the child's visibility,
+z-order and clipping. Switching between child views (Altium document tabs) left the old
+Metal view on top, and child panels shown over a view were hidden under it.
+
+Clip the view to the child's visible region (SYSRGN at monitor DPI; siblings above it are
+always excluded, children per WS_CLIPCHILDREN) with a CAShapeLayer mask, and hide it when
+nothing is visible. The clip is computed outside the win_data lock; the "is this the
+presented view" check, mask and show/hide then happen together under it. The mask is set
+before a view is shown and left alone while it is hidden, so no frame shows unclipped.
+Windows that become toplevel drop the mask.
+
+Known limitation: the clip is refreshed when win32u updates or presents the surface; a
+child that stops presenting keeps its last clip until its own window changes.
+
+--- a/dlls/winemac.drv/macdrv.h
++++ b/dlls/winemac.drv/macdrv.h
+@@ -200,6 +200,9 @@
+     struct client_surface   client;
+     macdrv_view             cocoa_view;
+     macdrv_metal_swapchain  metal_swapchain;
++    int                     hidden;     /* last state given to macdrv_set_view_hidden, -1 if unknown */
++    RECT                   *clip_rects; /* last clip given to macdrv_set_view_clip_rects */
++    int                     clip_count; /* -1: unclipped, 0: fully obscured */
+ };
+ 
+ extern struct macdrv_client_surface *impl_from_client_surface(struct client_surface *client);
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -521,6 +521,7 @@
+ extern void macdrv_set_view_frame(macdrv_view v, CGRect rect);
+ extern void macdrv_set_view_superview(macdrv_view v, macdrv_view s, macdrv_window w, macdrv_view p, macdrv_view n);
+ extern void macdrv_set_view_hidden(macdrv_view v, bool hidden);
++extern void macdrv_set_view_clip_rects(macdrv_view v, const CGRect *rects, int count);
+ extern void macdrv_add_view_opengl_context(macdrv_view v, macdrv_opengl_context c);
+ extern void macdrv_remove_view_opengl_context(macdrv_view v, macdrv_opengl_context c);
+ extern macdrv_metal_device macdrv_create_metal_device(void);
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -3924,6 +3924,49 @@
+ }
+ 
+ /***********************************************************************
++ *              macdrv_set_view_clip_rects
++ *
++ * Altium-on-Wine kit: clip a client-surface view to the visible part of its
++ * Win32 window (rects in Win32 coordinates relative to the view), so sibling
++ * windows above it (pop-out panels, other document views) aren't covered by
++ * the Metal layer. NULL rects removes the clip.
++ */
++void macdrv_set_view_clip_rects(macdrv_view v, const CGRect *rects, int count)
++{
++@autoreleasepool
++{
++    WineContentView* view = (WineContentView*)v;
++    CGMutablePathRef path = NULL;
++    int i;
++
++    if (rects)
++    {
++        path = CGPathCreateMutable();
++        for (i = 0; i < count; i++)
++            CGPathAddRect(path, NULL, cgrect_mac_from_win(rects[i]));
++    }
++
++    OnMainThreadAsync(^{
++        CALayer* layer = [view layer];
++        CAShapeLayer* mask = (CAShapeLayer*)layer.mask;
++
++        [CATransaction begin];
++        [CATransaction setDisableActions:YES];
++        if (!path)
++            layer.mask = nil;
++        else
++        {
++            if (!mask) layer.mask = mask = [CAShapeLayer layer];
++            mask.contentsScale = layer.contentsScale;
++            mask.path = path;
++        }
++        [CATransaction commit];
++        if (path) CGPathRelease(path);
++    });
++}
++}
++
++/***********************************************************************
+  *              macdrv_set_view_hidden
+  */
+ void macdrv_set_view_hidden(macdrv_view v, bool hidden)
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1077,6 +1077,7 @@
+     TRACE("%s\n", debugstr_client_surface(client));
+ 
+     if (surface->metal_swapchain) macdrv_destroy_swapchain(surface->metal_swapchain);
++    free(surface->clip_rects);
+ }
+ 
+ static void macdrv_client_surface_detach(struct client_surface *client)
+@@ -1100,6 +1101,130 @@
+     }
+ }
+ 
++/* Altium-on-Wine kit: a child window's client surface (GL/Vulkan/Metal) is a flat subview
++ * of the toplevel Cocoa window, layered above everything Win32 draws into the window, and it
++ * ignored the child's Win32 visibility, z-order and clipping. So when an app switched between
++ * child views (e.g. document tabs), or showed a child panel over the view, the Metal layer
++ * stayed on top and covered it. Clip the view to the child's real visible region (which
++ * accounts for hidden ancestors and siblings above it), and hide it when nothing is visible.
++ *
++ * Known limitation: this runs when the surface is updated or presented. A child that stops
++ * presenting and is then covered keeps its last clip until win32u updates its client surfaces
++ * again (which it does on any position, visibility or z-order change of the window itself). */
++static int client_surface_get_clip(struct macdrv_client_surface *surface, RECT **ret_rects)
++{
++    HWND hwnd = surface->client.hwnd;
++    RECT full = surface->client.monitor_rect;
++    UINT flags = DCX_CACHE | DCX_CLIPSIBLINGS;
++    int count = -1;  /* unclipped unless we learn otherwise */
++    RGNDATA *data = NULL;
++    HRGN region;
++    DWORD size;
++    HDC hdc;
++
++    *ret_rects = NULL;
++    OffsetRect(&full, -full.left, -full.top);
++
++    /* The Cocoa view is above every sibling, so always clip siblings that are above the window
++     * in Win32 z-order, whatever its style. Children follow the style, as they would on Windows. */
++    if (NtUserGetWindowLongW(hwnd, GWL_STYLE) & WS_CLIPCHILDREN) flags |= DCX_CLIPCHILDREN;
++    if (!(hdc = NtUserGetDCEx(hwnd, 0, flags))) return -1;
++    if ((region = NtGdiCreateRectRgn(0, 0, 0, 0)))
++    {
++        if (NtGdiGetRandomRgn(hdc, region, SYSRGN | NTGDI_RGN_MONITOR_DPI) > 0 &&
++            (size = NtGdiGetRegionData(region, 0, NULL)) && (data = malloc(size)) &&
++            NtGdiGetRegionData(region, size, data))
++        {
++            RECT *rects = (RECT *)data->Buffer;
++            count = data->rdh.nCount;
++            if (count == 1 && rects[0].left <= full.left && rects[0].top <= full.top &&
++                rects[0].right >= full.right && rects[0].bottom >= full.bottom)
++                count = -1;
++            else if (count > 0 && (*ret_rects = malloc(count * sizeof(RECT))))
++                memcpy(*ret_rects, rects, count * sizeof(RECT));
++            else if (count > 0)
++                count = -1;
++        }
++        free(data);
++        NtGdiDeleteObjectApp(region);
++    }
++    NtUserReleaseDC(hwnd, hdc);
++    return count;
++}
++
++/* Apply a clip computed by client_surface_get_clip(); count -1 removes the mask. Must be called
++ * with the window's win_data held. Returns FALSE (cache untouched) if it couldn't be applied. */
++static BOOL client_surface_set_clip(struct macdrv_client_surface *surface, RECT *rects, int count)
++{
++    if (count == surface->clip_count &&
++        (count <= 0 || !memcmp(rects, surface->clip_rects, count * sizeof(RECT))))
++        return TRUE;
++
++    TRACE("%s clip count %d\n", debugstr_client_surface(&surface->client), count);
++    if (count > 0)
++    {
++        CGRect *cgrects;
++        RECT *copy;
++        int i;
++
++        if (!(cgrects = malloc(count * sizeof(CGRect)))) return FALSE;
++        if (!(copy = malloc(count * sizeof(RECT))))
++        {
++            free(cgrects);
++            return FALSE;
++        }
++        for (i = 0; i < count; i++) cgrects[i] = cgrect_from_rect(rects[i]);
++        macdrv_set_view_clip_rects(surface->cocoa_view, cgrects, count);
++        free(cgrects);
++        memcpy(copy, rects, count * sizeof(RECT));
++        free(surface->clip_rects);
++        surface->clip_rects = copy;
++    }
++    else
++    {
++        macdrv_set_view_clip_rects(surface->cocoa_view, NULL, 0);
++        free(surface->clip_rects);
++        surface->clip_rects = NULL;
++    }
++    surface->clip_count = count;
++    return TRUE;
++}
++
++static void client_surface_set_hidden(struct macdrv_client_surface *surface, int hidden)
++{
++    if (surface->hidden == hidden) return;
++
++    TRACE("%s hidden %d\n", debugstr_client_surface(&surface->client), hidden);
++    surface->hidden = hidden;
++    macdrv_set_view_hidden(surface->cocoa_view, hidden);
++}
++
++/* Bring a child surface's view clip and visibility up to date. The clip is computed outside
++ * the win_data lock (it goes through win32u), then the presented check, mask and visibility
++ * change are done together under it, so a concurrent present on the same window can't leave
++ * two views shown. The mask is always set before a view is shown and never touched while a
++ * view is being hidden, so a view never shows a frame without its clip. */
++static void client_surface_sync_child(struct macdrv_client_surface *surface)
++{
++    HWND hwnd = surface->client.hwnd;
++    struct macdrv_win_data *data;
++    RECT *rects;
++    int count, hidden;
++
++    count = client_surface_get_clip(surface, &rects);
++
++    if ((data = get_win_data(hwnd)))
++    {
++        hidden = data->client_view != surface->cocoa_view || count == 0;
++        if (hidden)
++            client_surface_set_hidden(surface, 1);
++        else if (client_surface_set_clip(surface, rects, count))
++            client_surface_set_hidden(surface, 0);
++        release_win_data(data);
++    }
++    free(rects);
++}
++
+ static void macdrv_client_surface_update(struct client_surface *client)
+ {
+     struct macdrv_client_surface *surface = impl_from_client_surface(client);
+@@ -1111,24 +1236,33 @@
+     if (!(data = get_win_data(toplevel))) return;
+     macdrv_set_view_frame(surface->cocoa_view, cgrect_from_rect(client->monitor_rect));
+     macdrv_set_view_superview(surface->cocoa_view, toplevel == hwnd ? NULL : data->client_view, data->cocoa_window, NULL, NULL);
++    /* A window that became a toplevel owns its whole Cocoa window: drop any child clip. */
++    if (toplevel == hwnd) client_surface_set_clip(surface, NULL, -1);
+     release_win_data(data);
++
++    if (toplevel != hwnd) client_surface_sync_child(surface);
+ }
+ 
+ static void macdrv_client_surface_present(struct client_surface *client, HDC hdc)
+ {
+     struct macdrv_client_surface *surface = impl_from_client_surface(client);
++    HWND hwnd = surface->client.hwnd;
+     struct macdrv_win_data *data;
++    BOOL child = hwnd != NtUserGetAncestor(hwnd, GA_ROOT);
+ 
+     TRACE("%s\n", debugstr_client_surface(client));
+ 
+-    if (!(data = get_win_data(surface->client.hwnd))) return;
++    if (!(data = get_win_data(hwnd))) return;
+     if (data->client_view != surface->cocoa_view)
+     {
+         if (data->client_view) macdrv_set_view_hidden(data->client_view, TRUE);
+-        macdrv_set_view_hidden(surface->cocoa_view, FALSE);
+         data->client_view = surface->cocoa_view;
++        surface->hidden = -1;  /* the previous surface may have hidden us behind our back */
+     }
++    if (!child) client_surface_set_hidden(surface, 0);
+     release_win_data(data);
++
++    if (child) client_surface_sync_child(surface);
+ }
+ 
+ static const struct client_surface_funcs macdrv_client_surface_funcs =
+@@ -1155,6 +1289,9 @@
+ 
+     if (surface)
+     {
++        surface->hidden = 1;
++        surface->clip_count = -1;
++        surface->clip_rects = NULL;
+         macdrv_client_surface_update(&surface->client);
+         macdrv_client_surface_present(&surface->client, 0);
+     }
