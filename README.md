@@ -1,13 +1,13 @@
 # Altium Designer on macOS with Wine
 
-Runs the Altium Designer 26.10.1 offline installer and Altium itself under Wine on Apple Silicon. No CrossOver, no VM. Tested on an M4 Mac with macOS 15.7.9: install, sign-in, On-Demand license, cloning and opening an Altium 365 project, and the schematic, PCB 2D and PCB 3D editors.
+Run Altium Designer on Apple Silicon Macs with patched Wine. Tested with Altium 26.10.1 on an M4 Mac running macOS 15.7.9.
 
 ![LimeSDR-USB FPGA board in Altium's 3D PCB editor running under Wine on macOS](docs/screenshots/limesdr-pcb-3d.png)
 
-*LimeSDR-USB v1.4 in the 3D PCB editor. Hardware by
+*LimeSDR-USB by
 [Lime Microsystems / Myriad-RF](https://github.com/myriadrf/LimeSDR-USB),
 licensed [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).
-[Capture details and exact project revision](docs/screenshots/README.md).*
+[Project and capture details](docs/screenshots/README.md).*
 
 Nothing is installed system-wide. Wine, the prefix and the downloads all live in `~/AltiumWine`, so deleting that folder undoes everything (or use `install.sh --uninstall`). The exceptions:
 
@@ -28,15 +28,7 @@ bash install.sh
 
 For a specific offline setup folder or ZIP, use `bash install.sh --altium-installer /path/to/offline-setup`. The release includes prebuilt patched Wine modules, so Xcode and Homebrew are not required for the default install.
 
-What it does:
-
-1. Checks the Mac and Rosetta 2.
-2. Downloads the kit and the prebuilt patched Wine modules from the release, plus wine-staging 11.16 and DXVK from their own projects. Every download is checksum-verified.
-3. Sets up Wine and the prefix, and installs core fonts.
-4. Runs the Altium installer from your offline setup folder or `.zip`. It finds one in `~/Downloads`, or asks.
-5. Creates `~/Applications/Altium Designer (Wine).app`.
-
-It needs no Xcode or Homebrew, and takes a few minutes plus the Altium install. The Altium installer isn't redistributable: download the offline installer from your Altium account. Options:
+The installer sets up Wine and fonts, runs your Altium installer, and creates `~/Applications/Altium Designer (Wine).app`. Downloads are checksum-verified. Get the Altium offline installer from your Altium account.
 
 - `--altium-installer PATH`
 - `--skip-altium`
@@ -81,19 +73,15 @@ DXVK-macOS (about 4 MB, checksum-verified) is downloaded the first time you `run
 
 ## Screenshots
 
-The example is [LimeSDR-USB](https://github.com/myriadrf/LimeSDR-USB), an
-open-hardware SDR board with a Cyclone IV FPGA and native Altium design files.
-These are captures from the running Mac application, using its v1.4 plug board
-project. The hardware design is unchanged. See the
-[attribution and capture notes](docs/screenshots/README.md).
+[LimeSDR-USB](https://github.com/myriadrf/LimeSDR-USB), an open-hardware FPGA board, running in Altium on macOS. [Project and capture details](docs/screenshots/README.md).
 
-**2D PCB editor — top layer emphasized:**
+**PCB layout**
 
 ![LimeSDR-USB PCB layout in Altium on macOS with Wine](docs/screenshots/limesdr-pcb-2d.png)
 
-**Schematic editor — Cyclone IV FPGA banks 1–4:**
+**Schematic**
 
-![LimeSDR-USB FPGA banks schematic in Altium on macOS with Wine](docs/screenshots/limesdr-fpga-schematic.png)
+![LimeSDR-USB schematic in Altium on macOS with Wine](docs/screenshots/limesdr-fpga-schematic.png)
 
 ## Making a release
 
@@ -124,7 +112,7 @@ The test release must be built with `--url http://127.0.0.1:8765`.
 
 ## Commands
 
-| Command | What it does |
+| Command | Purpose |
 |---|---|
 | *(none)* | Runs setup and deps if they haven't run yet, then the installer |
 | `setup [--force-wine]` | Downloads Wine, builds the patched bundle if missing, and creates or refreshes the prefix. Refuses while Altium is running. |
@@ -150,7 +138,7 @@ Environment variables:
 | `KILL_WEBVIEW2=0` | Turns off the WebView2 watchdog. |
 | `WINE_D2D_LAZY_STATE=0` | Turns off the Direct2D state-caching part of patch 0003. |
 
-## What the kit changes
+## Wine patches and settings
 
 ### Wine fixes (`~/AltiumWine/wine-patched`)
 
@@ -205,8 +193,6 @@ bash build-patched-wine.sh --modules DIR        # use prebuilt winemac.so/d2d1.d
 bash build-patched-wine.sh --export DIR         # build, then copy the modules + SHA256SUMS to DIR
 bash build-patched-wine.sh --clean              # delete the source and object trees
 ```
-
-How it works:
 
 - **Sources:** the Wine 11.16 tarball from dl.winehq.org (checksum-verified). It's unpacked fresh and patched each run.
 - **Compilers:** the host side is built with Apple's clang under Rosetta, and the PE side with llvm-mingw (downloaded to `~/AltiumWine/tools`).
