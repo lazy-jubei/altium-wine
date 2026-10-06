@@ -2,6 +2,8 @@
 
 Run Altium Designer on Apple Silicon Macs with patched Wine. Tested with Altium Designer 17.1 and 26.10.1 on an M4 Mac running macOS 15.7.9.
 
+Altium 365 works, including project cloning.
+
 ![3D PCB rotation in Altium on macOS](docs/screenshots/limesdr-pcb-rotation.gif)
 
 *[LimeSDR-USB](docs/screenshots/README.md) by [Lime Microsystems / Myriad-RF](https://github.com/myriadrf/LimeSDR-USB).*
