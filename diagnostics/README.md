@@ -159,3 +159,22 @@ source/destination roles, then replaces an allocation at the same address.
 lookup by name, null BSTR and index. Build using either the i686 or x86_64
 compiler with `-I ~/AltiumWine/build/obj-wine-11.16/include -lole32 -loleaut32`,
 then run in the tested Wine prefix. Both architectures pass.
+
+## Schematic pan rate
+
+`pan-frames.swift` counts changed content in a ScreenCaptureKit window capture.
+Use a region which stays populated for the entire pan, away from the cursor,
+crosshair and status bars. A small region that becomes blank undercounts frames.
+The optional `linear` gesture follows the same horizontal path every four seconds.
+
+```bash
+swiftc -parse-as-library -O diagnostics/pan-frames.swift -o /tmp/pan-frames
+# Capture in one terminal; start the gesture after “capture ready” and refocus Altium.
+/tmp/pan-frames WINDOW_ID 23 450 100 680 250 120
+/tmp/schematic-figure-eight WINDOW_ID 1450 850 500 1 4 20 linear
+```
+
+Coordinates above assume the tested 2560-point window; captures are scaled to
+1280 pixels wide. Count `change` timestamps from 1.5 to 19.5 seconds and divide
+by 18. Report completed CAD frames separately from compositor interpolation
+and from MoltenVK's GPU presentation statistics.

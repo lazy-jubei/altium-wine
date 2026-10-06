@@ -3,6 +3,7 @@
 #include <ApplicationServices/ApplicationServices.h>
 #include <math.h>
 #include <signal.h>
+#include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -28,11 +29,13 @@ int main(int argc, char **argv)
 {
     @autoreleasepool
     {
-        if (argc != 8)
+        if (argc != 8 && argc != 9)
         {
-            fprintf(stderr, "usage: schematic-figure-eight WINDOW_ID X Y RADIUS_X RADIUS_Y PERIOD_SECONDS TOTAL_SECONDS\n");
+            fprintf(stderr, "usage: schematic-figure-eight WINDOW_ID X Y RADIUS_X RADIUS_Y PERIOD_SECONDS TOTAL_SECONDS [linear]\n");
             return 2;
         }
+        BOOL linear = argc == 9 && !strcmp(argv[8], "linear");
+        if (argc == 9 && !linear) return 2;
         CGWindowID window = (CGWindowID)strtoul(argv[1], NULL, 10);
         double x = atof(argv[2]), y = atof(argv[3]), rx = atof(argv[4]), ry = atof(argv[5]);
         double period = atof(argv[6]), seconds = atof(argv[7]);
@@ -78,8 +81,11 @@ int main(int argc, char **argv)
         unsigned int events = 0;
         while (!interrupted && now() - start < seconds)
         {
-            double phase = (now() - start) * 2 * M_PI / period;
-            post(source, kCGEventRightMouseDragged, x + rx * sin(phase), y + ry * sin(2 * phase));
+            double elapsed = now() - start, phase = elapsed * 2 * M_PI / period;
+            double fraction = fmod(elapsed, period) * 2 / period;
+            post(source, kCGEventRightMouseDragged,
+                 x + rx * (linear ? (fraction <= 1 ? fraction : 2 - fraction) : sin(phase)),
+                 y + (linear ? 0 : ry * sin(2 * phase)));
             ++events;
             next += 1.0 / 120.0;
             double delay = next - now();
@@ -89,7 +95,7 @@ int main(int argc, char **argv)
         usleep(150000);
         post(source, kCGEventRightMouseUp, x, y);
         CFRelease(source);
-        printf("figure-eight: %u drag events, %.2f seconds\n", events, now() - start);
+        printf("%s: %u drag events, %.2f seconds\n", linear ? "linear pan" : "figure-eight", events, now() - start);
         return interrupted ? 130 : 0;
     }
 }

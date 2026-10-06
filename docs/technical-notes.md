@@ -6,16 +6,16 @@ Run the commands below from the repository root.
 
 ```bash
 bash build-patched-wine.sh --export ~/AltiumWine/build/modules-export   # 13 changed files + SHA256SUMS
-bash make-release.sh --version v1.0.0 \
-     --url https://github.com/lazy-jubei/altium-wine/releases/download/v1.0.0 \
+bash make-release.sh --version v1.1.0 \
+     --url https://github.com/lazy-jubei/altium-wine/releases/download/v1.1.0 \
      --modules ~/AltiumWine/build/modules-export
 ```
 
-`make-release.sh` writes `dist/v1.0.0/` locally:
+`make-release.sh` writes `dist/v1.1.0/` locally:
 
 - `install.sh`, with the URL and the two archive checksums filled in;
-- `altium-wine-kit-v1.0.0.tar.gz`;
-- `altium-wine-modules-v1.0.0.tar.gz`;
+- `altium-wine-kit-v1.1.0.tar.gz`;
+- `altium-wine-modules-v1.1.0.tar.gz`;
 - `SHA256SUMS`.
 
 Uploading those files to the URL is a separate step. Include the source archives described in [docs/wine-sources.md](wine-sources.md), and add their hashes to `SHA256SUMS`. Then `curl -fsSL <url>/install.sh | bash` works.
@@ -158,7 +158,8 @@ space avoids that conversion while retaining color management and resolution.
 The same dense schematic pan rose from 14.7 to 26.4 fps. These count changed
 content frames in a cropped window capture during an 18-second steady section
 of a 20-second right drag; the cursor and status bars are excluded. The launcher
-enables this for AD17; `AD17_SRGB_WINDOWS=0` restores the previous backing store.
+enables this for AD17 and AD26; `AD17_SRGB_WINDOWS=0` or
+`AD26_SRGB_WINDOWS=0` restores the respective previous backing store.
 
 Before the immediate-upload and transparency changes below, a dense Music PCB
 panned at 6.9 fps in 3D in the full Retina window. Disabling antialiasing
@@ -324,3 +325,32 @@ GPU bitmap copies, contiguous/SIMD/prefetch copies, native scrolling, unbuffered
 painting, hidden grids, direct GDI dispatch, display-link updates, higher thread
 priority and suppressed draws were tried and discarded. Reduced viewport sizes
 can be faster but are not comparable to the full Retina measurement above.
+
+
+### AD26 schematic follow-up (October 6, 2026)
+
+The reviewed bundle is also tested with 26.10.1. Its schematic uses a GPU
+canvas, so the AD17 bitmap pan compositor is not enabled there. Matching the
+surrounding GDI window to sRGB removes the same costly Retina color conversion.
+The normal AD26 launcher now enables this with `AD26_SRGB_WINDOWS=1`.
+
+On the public FPGA sheet, a 2560-point-wide Retina window measured **21.33 fps
+off / 43.61 fps on**, counting complete changed CAD frames. A 1920×1080-point
+Retina viewport measured **58.44–59.94 fps** in repeated runs. Full-size 60 fps is still
+not reached; the default keeps Retina enabled and does not resize the window.
+The comparison uses 120-Hz capture/input, a 20-second horizontal pan, and an
+18-second steady interval. The wider capture region stays populated throughout
+the pan; earlier small-region measurements undercounted when it became blank.
+See [diagnostics](../diagnostics/README.md) for the capture and gesture tools.
+
+Consecutive shader-constant reuse and an immutable brush-buffer cache did not
+improve the trials and were removed. Direct2D conformance gave the same 5,553
+checks, 103 expected todos, 40 existing failures and 77 skips with each trial.
+Presentation, asynchronous submission, resource-binding and semaphore trials
+also supplied no clear improvement and are not included in the defaults.
+
+Fast 350×250-point figure-eights (1.2-second period) were captured over 111
+frames at the smaller viewport; sampled canvas corners show no seams or invented
+edge pixels. The final window was restored to full size. Component-property
+inspection, input release and responsiveness were checked without saving any
+changes to the public project.

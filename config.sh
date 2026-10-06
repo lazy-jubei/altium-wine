@@ -61,3 +61,6 @@ export MVK_CONFIG_LOG_LEVEL="${MVK_CONFIG_LOG_LEVEL:-1}"
 # Native Apple Silicon worker for complete schematic viewport copies.
 AD17_NATIVE_GDI="${AD17_NATIVE_GDI:-1}"
 AD17_NATIVE_GDI_WORKERS="${AD17_NATIVE_GDI_WORKERS:-2}"
+
+# Match AD26's UI backing color space without changing its GPU canvas.
+AD26_SRGB_WINDOWS="${AD26_SRGB_WINDOWS:-1}"

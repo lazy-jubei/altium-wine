@@ -8,10 +8,10 @@ Run Altium Designer on Apple Silicon Macs with patched Wine. Tested with Altium 
 
 ## Install
 
-Get the Altium offline installer from your Altium account, then download and run the [kit installer](https://github.com/lazy-jubei/altium-wine/releases/tag/v1.0.0):
+Get the Altium offline installer from your Altium account, then download and run the [kit installer](https://github.com/lazy-jubei/altium-wine/releases/tag/v1.1.0):
 
 ```bash
-curl -fL https://github.com/lazy-jubei/altium-wine/releases/download/v1.0.0/install.sh -o install.sh
+curl -fL https://github.com/lazy-jubei/altium-wine/releases/download/v1.1.0/install.sh -o install.sh
 bash install.sh
 ```
 
@@ -26,7 +26,7 @@ The installer sets up Wine and fonts and creates `~/Applications/Altium Designer
 Optimizations include:
 
 - Cached Direct2D state, glyphs and geometry for faster schematics.
-- Parallel bitmap copies and native Apple Silicon compositing for AD17 pans.
+- Matched color spaces, parallel copies and native AD17 pan compositing.
 - Queued Direct3D uploads for faster AD17 PCB views.
 - Fixes for hidden dialogs, floating panels and tooltip input.
 

@@ -590,13 +590,17 @@ cmd_run() {
     wine_env "$WINEDEBUG_RUN"
     # Only Altium 18+ (X2.EXE) has the WebView2 browser the watchdog ends.
     case "$exe" in *X2.EXE|*x2.exe) [ "${KILL_WEBVIEW2:-1}" = "1" ] && webview2_watchdog & ;; esac
+    # Match the sRGB GDI surfaces on both versions, including AD26's UI around its GPU canvas.
+    case "$exe" in
+        *X2.EXE|*x2.exe) export ALTIUM_MAC_SRGB="${AD26_SRGB_WINDOWS:-1}" ;;
+        *DXP.EXE|*dxp.exe) export ALTIUM_MAC_SRGB="${AD17_SRGB_WINDOWS:-1}" ;;
+    esac
     # AD17's CefSharp GPU process spins under Wine. Software Chromium rendering
     # restores the Home page/reports without changing the PCB's Direct3D renderer.
     case "$exe" in *DXP.EXE|*dxp.exe)
         export ALTIUM_D3D9_UPLOADS="${AD17_FAST_UPLOADS:-1}"
         export ALTIUM_D3D9_UPLOAD_HINTS="${AD17_FAST_UPLOAD_HINTS:-1}"
         export ALTIUM_D3D9_QUEUED_UP="${AD17_FAST_UP_DRAWS:-1}"
-        export ALTIUM_MAC_SRGB="${AD17_SRGB_WINDOWS:-1}"
         export ALTIUM_PARALLEL_GDI="${AD17_PARALLEL_GDI:-1}"
         export ALTIUM_GDI_WORKERS="${AD17_GDI_WORKERS:-2}"
         export ALTIUM_NATIVE_GDI="${AD17_NATIVE_GDI:-1}"
