@@ -2,7 +2,7 @@
 
 Run Altium Designer on Apple Silicon Macs with patched Wine. Tested with Altium Designer 17.1 and 26.10.1 on an M4 Mac running macOS 15.7.9.
 
-![3D PCB view in Altium on macOS](docs/screenshots/limesdr-pcb-3d.png)
+![3D PCB rotation in Altium on macOS](docs/screenshots/limesdr-pcb-rotation.gif)
 
 *[LimeSDR-USB](docs/screenshots/README.md) by [Lime Microsystems / Myriad-RF](https://github.com/myriadrf/LimeSDR-USB).*
 
@@ -44,7 +44,7 @@ Wine and Altium live in `~/AltiumWine`. Re-run `install.sh` to update.
 
 **Schematic view**
 
-![Schematic view](docs/screenshots/limesdr-fpga-schematic.png)
+![Schematic pan](docs/screenshots/limesdr-schematic-pan.gif)
 
 **Altium 17**
 

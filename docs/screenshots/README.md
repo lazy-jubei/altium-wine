@@ -16,7 +16,7 @@ built around an Altera Cyclone IV EP4CE40 FPGA. The hardware design is by
 - [Altium project: hardware/plug/1v4/LimeSDR-USB_1v4.PrjPcb](https://github.com/myriadrf/LimeSDR-USB/blob/c6ea7cea27b90e94625b8e49b71ee2a10a5345bb/hardware/plug/1v4/LimeSDR-USB_1v4.PrjPcb)
 
 The underlying hardware design was not modified. The repository includes
-screenshots; the Altium project files remain in their upstream repository.
+screenshots and GIFs; the Altium project files remain in their upstream repository.
 
 To reproduce the views, download or clone the upstream design, open the
 project above in Altium, and open `PCB/LimeSDR-USB_1v4.PcbDoc` or
@@ -30,3 +30,6 @@ constitute electrical, manufacturing or full Altium feature validation.
 `altium17-schematic.png` shows the same upstream FPGA sheet in Altium Designer
 17.1 on October 6, 2026. The Files panel is closed and the window caption is
 shortened for the capture; no schematic content is altered.
+
+The 3D rotation and straight schematic pan GIFs were recorded in Altium Designer
+26.10.1 on October 6, 2026, with only the public LimeSDR project open.
