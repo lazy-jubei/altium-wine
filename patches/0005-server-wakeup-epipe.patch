@@ -1,0 +1,35 @@
+From: Altium-on-Wine kit
+Subject: server: Do not kill a thread from send_thread_wakeup() on EPIPE
+
+Modules: server
+Base: wine-11.16 (also applies to wine-staging 11.16 and upstream master)
+
+wake_up() walks an object's wait queue and calls wake_thread() for each waiter. When the
+waiter's process has already died, send_thread_wakeup() got EPIPE and called kill_thread()
+right there. For the last thread of a process that destroys its handle table, which can free
+the object wake_up() is iterating (e.g. the internal sync of the dead thread's message queue,
+signaled by a message another process posted). wake_up() then reads freed memory and the
+server crashes, freezing every other process in the prefix. AddressSanitizer:
+  heap-use-after-free thread.c:1355 in wake_up, freed by release_object <- handle_table_destroy
+  <- remove_process_thread <- kill_thread <- send_thread_wakeup <- wake_thread <- wake_up.
+
+On EPIPE just report the failure; the dead client's closed request fd gets the thread killed
+from the main loop moments later, outside any wait queue walk.
+
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -1179,7 +1179,13 @@
+     if (ret >= 0)
+         fatal_protocol_error( thread, "partial wakeup write %d\n", ret );
+     else if (errno == EPIPE)
+-        kill_thread( thread, 0 );  /* normal death */
++    {
++        /* Normal death: the client is gone and its closed request fd will get the thread
++         * killed from the main loop. Don't kill it here: we can be called from wake_up()
++         * while it iterates an object's wait queue, and killing the last thread of a process
++         * destroys its handle table, which can free that very object (e.g. the internal sync
++         * of the dead thread's message queue) and crash the server. */
++    }
+     else
+         fatal_protocol_error( thread, "write: %s\n", strerror( errno ));
+     return -1;

@@ -1,0 +1,84 @@
+From: Altium-on-Wine kit
+Subject: winemac.drv: Bring a modal dialog forward when its disabled owner is clicked or the app is activated
+
+Modules: dlls/winemac.drv
+Base: 0000 + 0002
+
+On Windows, clicking a window that a modal dialog has disabled activates that dialog (the
+owner's last active popup). The Mac driver didn't: Cocoa raised the clicked, disabled window
+above its own dialog, so the app looked frozen with the dialog hidden behind it. Delphi apps
+(Altium) hit this constantly because the main form and every dialog are owned by the hidden
+TApplication window, so no owner/owned ordering keeps the dialog on top: Altium 17's
+"Account Sign In" dialog opened behind the main window, and Altium 26 once froze behind a
+hidden error dialog.
+
+On a mouse-button press on a disabled window, activate the last active popup of its root
+owner (if visible and enabled). Altium 17's main form is not owned by the TApplication window,
+so its modal dialogs (owned by TApplication) are not in that chain; for those, activate the
+foreground window of the same thread. When the app is activated, put the active window back on
+top if another of the app's windows is above it.
+
+--- a/dlls/winemac.drv/mouse.c
++++ b/dlls/winemac.drv/mouse.c
+@@ -831,6 +831,34 @@
+  *
+  * Handler for MOUSE_BUTTON events.
+  */
++/* Altium-on-Wine kit: like Windows, a click on a window that a modal dialog has disabled
++ * brings that dialog forward. Without this, Cocoa raises the clicked (disabled) window over
++ * its own dialog and the app looks frozen. Delphi apps hit this all the time: dialogs are owned
++ * by the hidden TApplication window, so no owner/owned ordering keeps the dialog above the main
++ * form. The dialog is either the last active popup of the disabled window's owner chain or, when
++ * the main form is not owned by the TApplication window (Altium Designer 17), the foreground
++ * window of the same thread. */
++static void activate_blocking_popup(HWND hwnd)
++{
++    HWND owner, popup, fg;
++
++    if (!hwnd || NtUserIsWindowEnabled(hwnd)) return;
++    if (!(owner = NtUserGetAncestor(hwnd, GA_ROOTOWNER))) owner = hwnd;
++    popup = NtUserGetLastActivePopup(owner);
++    if (!popup || popup == hwnd || popup == owner)
++    {
++        popup = NULL;
++        if ((fg = NtUserGetForegroundWindow()) && fg != hwnd && fg != owner
++            && NtUserGetWindowThread(fg, NULL) == NtUserGetWindowThread(hwnd, NULL))
++            popup = fg;
++    }
++    if (!popup) return;
++    if (!NtUserIsWindowVisible(popup) || !NtUserIsWindowEnabled(popup)) return;
++
++    TRACE("win %p is disabled; activating its popup %p\n", hwnd, popup);
++    NtUserSetForegroundWindowInternal(popup);
++}
++
+ void macdrv_mouse_button(HWND hwnd, const macdrv_event *event)
+ {
+     UINT flags = 0;
+@@ -843,6 +872,7 @@
+ 
+     if (event->mouse_button.pressed)
+     {
++        activate_blocking_popup(hwnd);
+         switch (event->mouse_button.button)
+         {
+         case 0: flags |= MOUSEEVENTF_LEFTDOWN; break;
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1984,8 +1984,15 @@
+  */
+ void macdrv_app_activated(void)
+ {
+-    TRACE("\n");
++    HWND active = get_active_window();
++
++    TRACE("active %p\n", active);
+     macdrv_UpdateClipboard();
++
++    /* Altium-on-Wine kit: when the app comes back to the front, put its active window (often a
++     * modal dialog) back on top; Cocoa may have ordered another of our windows above it. */
++    if (active && NtUserIsWindowVisible(active) && NtUserIsWindowEnabled(active) && !is_all_the_way_front(active))
++        NtUserSetWindowPos(active, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+ }
+ 
+ 

@@ -1,0 +1,59 @@
+From: Altium-on-Wine kit
+Subject: d3dx9: ID3DXEffect::SetRawValue on an array of structures
+
+Modules: dlls/d3dx9_36 (built as d3dx9_43.dll)
+Base: 0008
+
+Altium Designer 17 sets the lights of its 3D view (the effect parameter SCSceneLights, an
+array of two structures of five float4 members) with SetRawValue. For an array of structures
+d3dx_effect_SetRawValue walked param->members as if they were the structure's members; those
+are the array elements, which are themselves structures, so it failed with E_NOTIMPL
+("Unhandled structure member parameter class D3DXPC_STRUCT", about 3000 times per session)
+and the pixel shader's light constants (c0..c3) stayed zero. Every lit surface in the PCB
+3D view, the board and all 3D bodies, rendered black.
+
+Set the elements one by one: each is a structure that the existing code already handles.
+--- a/dlls/d3dx9_36/effect.c
++++ b/dlls/d3dx9_36/effect.c
+@@ -4543,6 +4543,41 @@
+                 return E_NOTIMPL;
+             }
+ 
++            if (param->element_count)
++            {
++                /* Array of structures (Altium Designer 17 sets its scene lights this way): the
++                 * elements are param->members[0 .. element_count - 1], each one a structure. */
++                for (i = 0; i < param->element_count && bytes_left; ++i)
++                {
++                    struct d3dx_parameter *element = &param->members[i];
++                    UINT element_size = 0, j;
++
++                    for (j = 0; j < element->member_count; ++j)
++                        element_size += (element->members[j].class == D3DXPC_MATRIX_ROWS ? 64 : 16)
++                                * max(1, element->members[j].element_count);
++
++                    hr = iface->lpVtbl->SetRawValue(iface, (D3DXHANDLE)element, cur_param_data, 0,
++                            min(element_size, bytes_left));
++                    if (FAILED(hr))
++                    {
++                        WARN("Failed with hr %#lx.\n", hr);
++                        return hr;
++                    }
++
++                    if (bytes_left <= element_size)
++                    {
++                        bytes_left = 0;
++                        break;
++                    }
++                    cur_param_data += element_size;
++                    bytes_left -= element_size;
++                }
++
++                if (bytes_left)
++                    FIXME("%u bytes were leftover, might have attempted to write an adjacent parameter.\n", bytes_left);
++                break;
++            }
++
+             for (i = 0; i < param->member_count; ++i)
+             {
+                 UINT member_size = param->members[i].class == D3DXPC_MATRIX_ROWS ? 64 : 16;

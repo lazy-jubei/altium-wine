@@ -1,0 +1,29 @@
+From: Altium-on-Wine kit
+Subject: winemac.drv: match Altium GDI window backing stores to sRGB
+
+Modules: dlls/winemac.drv
+Base: wine-11.16 + existing kit mac-driver patches
+
+Dense schematic panning spent most of the Cocoa main thread converting the
+entire Retina GDI image to a different window backing color space. GDI surface
+images are already tagged sRGB. Opt-in ALTIUM_MAC_SRGB=1 sets sRGB on new Cocoa
+windows, retaining color management, Retina resolution and original image data.
+Other launches keep their existing backing color space. The AD17 launcher sets
+this flag; AD17_SRGB_WINDOWS=0 restores its previous behavior.
+
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -1078,6 +1078,13 @@
+                                               defer:YES] autorelease];
+ 
+         if (!window) return nil;
++
++        /* GDI surface images are 8-bit sRGB. Matching the window backing
++         * color space avoids a CPU conversion of every Retina pixel when
++         * Core Animation copies the image. ColorSync still maps the window
++         * to the display profile during composition. Opt-in for AD17. */
++        if ([[[NSProcessInfo processInfo] environment][@"ALTIUM_MAC_SRGB"] boolValue])
++            [window setColorSpace:[NSColorSpace sRGBColorSpace]];
+ 
+         /* Standardize windows to eliminate differences between titled and
+            borderless windows and between NSWindow and NSPanel. */

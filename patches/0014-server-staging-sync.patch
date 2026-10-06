@@ -1,0 +1,1921 @@
+Wine Staging 11.16 server baseline, commit f1936f02ba06b5012f89f75901944e8c2d26951c.
+
+Enabled server patch sets and their dependencies only: server-PeekMessage,
+ws2_32-af_unix, server-Stored_ACLs, server-Signal_Thread and
+dcomp-DCompositionCreateDevice2. Retains protocol version 962 and the stock
+server behavior when rebuilding the DPI and wakeup fixes. Generated request
+headers are included so no staging installer is needed during the kit build.
+
+Original Staging patch references (LGPL 2.1 or later):
+
+server-PeekMessage/0001-server-Fix-handling-of-GetMessage-after-previous-Pee.patch:
+  From 68b654546c4ed9a7874e6ae8b25d7bb0cd6a1b9b Mon Sep 17 00:00:00 2001
+  From: Sebastian Lackner <sebastian@fds-team.de>
+  Subject: [PATCH] server: Fix handling of GetMessage after previous PeekMessage
+ws2_32-af_unix/0001-server-Allow-for-deletion-of-socket-files.patch:
+  From e45c14c96a9de9c43e654990d40ae33c72641fc3 Mon Sep 17 00:00:00 2001
+  From: Ally Sommers <dropbear.sh@gmail.com>
+  Subject: [PATCH] server: Allow for deletion of socket files.
+ws2_32-af_unix/0002-ws2_32-Add-support-for-AF_UNIX-sockets.patch:
+  From bc232072355ee53bb808808887e0673faffe12fe Mon Sep 17 00:00:00 2001
+  From: Ally Sommers <dropbear.sh@gmail.com>
+  Subject: [PATCH] ws2_32: Add support for AF_UNIX sockets.
+ws2_32-af_unix/0003-server-Introduce-error-when-attempting-to-create-a-S.patch:
+  From c0917e0ccfd96ea9facaddaa63672d2430220aca Mon Sep 17 00:00:00 2001
+  From: Ally Sommers <dropbear.sh@gmail.com>
+  Subject: [PATCH] server: Introduce error when attempting to create a
+ws2_32-af_unix/0004-server-Fix-getsockname-and-accept-on-AF_UNIX-sockets.patch:
+  From 77c1d975e73a574dc53b31d7954e56140e3bdade Mon Sep 17 00:00:00 2001
+  From: Ally Sommers <dropbear.sh@gmail.com>
+  Subject: [PATCH] server: Fix getsockname() and accept() on AF_UNIX sockets.
+ws2_32-af_unix/0006-server-harden-the-AF_UNIX-socket-path-handling.patch:
+  From 6e1edd579c2e9a5a9891d0bc3a731b66c02f2a54 Mon Sep 17 00:00:00 2001
+  From: Giang Nguyen <nen24t@gmail.com>
+  Subject: [PATCH] server: harden the AF_UNIX socket path handling
+ws2_32-af_unix/0008-server-give-AF_UNIX-sockets-their-family-before-bind.patch:
+  From 83141c9506515f9209cb0764960134285b5dc069 Mon Sep 17 00:00:00 2001
+  From: Giang Nguyen <nen24t@gmail.com>
+  Subject: [PATCH] server: give AF_UNIX sockets their family before bind
+ws2_32-af_unix/0009-server-open-bound-AF_UNIX-sockets-as-reparse-points.patch:
+  From cb9d8a254afa1a07ace7db61bb6a4cb9e4733500 Mon Sep 17 00:00:00 2001
+  From: Giang Nguyen <nen24t@gmail.com>
+  Subject: [PATCH] server: open bound AF_UNIX sockets as reparse points
+server-Stored_ACLs/0001-server-Unify-the-storage-of-security-attributes-for-.patch:
+  From 07fdb3ce4ca75bb568dfcb62708fde112b0b7b3c Mon Sep 17 00:00:00 2001
+  From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
+  Subject: [PATCH] server: Unify the storage of security attributes for files
+server-Stored_ACLs/0002-server-Unify-the-retrieval-of-security-attributes-fo.patch:
+  From d00da337d96200866ae73008844455c29e4d3291 Mon Sep 17 00:00:00 2001
+  From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
+  Subject: [PATCH] server: Unify the retrieval of security attributes for files
+server-Stored_ACLs/0003-server-Add-a-helper-function-set_sd_from_token_inter.patch:
+  From c233c752bedccf8bc399507a987a22850eb64531 Mon Sep 17 00:00:00 2001
+  From: Sebastian Lackner <sebastian@fds-team.de>
+  Subject: [PATCH] server: Add a helper function set_sd_from_token_internal to
+server-Stored_ACLs/0004-server-Temporarily-store-the-full-security-descripto.patch:
+  From 41423a2eebdd189f3da7b2bc311c4c4ac3f0555c Mon Sep 17 00:00:00 2001
+  From: Sebastian Lackner <sebastian@fds-team.de>
+  Subject: [PATCH] server: Temporarily store the full security descriptor for
+server-Stored_ACLs/0005-server-Store-file-security-attributes-with-extended-.patch:
+  From 443672a397486c1b847624603daad419de866f18 Mon Sep 17 00:00:00 2001
+  From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
+  Subject: [PATCH] server: Store file security attributes with extended file
+server-Stored_ACLs/0006-server-Convert-return-of-file-security-masks-with-ge.patch:
+  From 8c04b2cc07d768704e6f48dfb628bef2b69c5fc7 Mon Sep 17 00:00:00 2001
+  From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
+  Subject: [PATCH] server: Convert return of file security masks with generic
+server-Stored_ACLs/0007-server-Retrieve-file-security-attributes-with-extend.patch:
+  From deba3142d906195d00878beceaf832915f1a46fe Mon Sep 17 00:00:00 2001
+  From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
+  Subject: [PATCH] server: Retrieve file security attributes with extended file
+server-Signal_Thread/0001-server-Do-not-signal-thread-until-it-is-really-gone.patch:
+  From 9af8e0fc4883258d1aa04179bcabed5057dd8af4 Mon Sep 17 00:00:00 2001
+  From: Sebastian Lackner <sebastian@fds-team.de>
+  Subject: [PATCH] server: Do not signal violently terminated threads until they
+dcomp-DCompositionCreateDevice2/0062-dcomp-Implement-shared-visual-handle-for-the-same-proc.patch:
+  From ef3f68bb70e53f4b317b4e806e855b6be621ceda Mon Sep 17 00:00:00 2001
+  From: Zhiyi Zhang <zzhang@codeweavers.com>
+  Subject: [PATCH] dcomp: Implement shared visual handle for the same process.
+
+--- a/server/change.c
++++ b/server/change.c
+@@ -309,39 +309,17 @@
+     return (struct fd *)grab_object( dir->fd );
+ }
+ 
+-static int get_dir_unix_fd( struct dir *dir )
+-{
+-    return get_unix_fd( dir->fd );
+-}
+-
+ static struct security_descriptor *dir_get_sd( struct object *obj )
+ {
+     struct dir *dir = (struct dir *)obj;
+-    int unix_fd;
+-    struct stat st;
+     struct security_descriptor *sd;
++    struct fd *fd;
++
+     assert( obj->ops == &dir_ops );
+ 
+-    unix_fd = get_dir_unix_fd( dir );
+-
+-    if (unix_fd == -1 || fstat( unix_fd, &st ) == -1)
+-        return obj->sd;
+-
+-    /* mode and uid the same? if so, no need to re-generate security descriptor */
+-    if (obj->sd &&
+-        (st.st_mode & (S_IRWXU|S_IRWXO)) == (dir->mode & (S_IRWXU|S_IRWXO)) &&
+-        (st.st_uid == dir->uid))
+-        return obj->sd;
+-
+-    sd = mode_to_sd( st.st_mode,
+-                     security_unix_uid_to_sid( st.st_uid ),
+-                     token_get_primary_group( current->process->token ));
+-    if (!sd) return obj->sd;
+-
+-    dir->mode = st.st_mode;
+-    dir->uid = st.st_uid;
+-    free( obj->sd );
+-    obj->sd = sd;
++    fd = dir_get_fd( obj );
++    sd = get_file_sd( obj, fd, &dir->mode, &dir->uid );
++    release_object( fd );
+     return sd;
+ }
+ 
+@@ -349,48 +327,15 @@
+                        unsigned int set_info )
+ {
+     struct dir *dir = (struct dir *)obj;
+-    const struct sid *owner;
+-    struct stat st;
+-    mode_t mode;
+-    int unix_fd;
++    struct fd *fd;
++    int ret;
+ 
+     assert( obj->ops == &dir_ops );
+ 
+-    unix_fd = get_dir_unix_fd( dir );
+-
+-    if (unix_fd == -1 || fstat( unix_fd, &st ) == -1) return 1;
+-
+-    if (set_info & OWNER_SECURITY_INFORMATION)
+-    {
+-        owner = sd_get_owner( sd );
+-        if (!owner)
+-        {
+-            set_error( STATUS_INVALID_SECURITY_DESCR );
+-            return 0;
+-        }
+-        if (!obj->sd || !equal_sid( owner, sd_get_owner( obj->sd ) ))
+-        {
+-            /* FIXME: get Unix uid and call fchown */
+-        }
+-    }
+-    else if (obj->sd)
+-        owner = sd_get_owner( obj->sd );
+-    else
+-        owner = token_get_owner( current->process->token );
+-
+-    if (set_info & DACL_SECURITY_INFORMATION)
+-    {
+-        /* keep the bits that we don't map to access rights in the ACL */
+-        mode = st.st_mode & (S_ISUID|S_ISGID|S_ISVTX);
+-        mode |= sd_to_mode( sd, owner );
+-
+-        if (((st.st_mode ^ mode) & (S_IRWXU|S_IRWXG|S_IRWXO)) && fchmod( unix_fd, mode ) == -1)
+-        {
+-            file_set_error();
+-            return 0;
+-        }
+-    }
+-    return 1;
++    fd = dir_get_fd( obj );
++    ret = set_file_sd( obj, fd, &dir->mode, &dir->uid, sd, set_info );
++    release_object( fd );
++    return ret;
+ }
+ 
+ static struct change_record *get_first_change_record( struct dir *dir )
+@@ -1119,7 +1064,8 @@
+ 
+ #endif  /* HAVE_SYS_INOTIFY_H */
+ 
+-struct object *create_dir_obj( struct fd *fd, unsigned int access, mode_t mode )
++struct object *create_dir_obj( struct fd *fd, unsigned int access, mode_t mode,
++                               const struct security_descriptor *sd )
+ {
+     struct dir *dir;
+ 
+@@ -1140,6 +1086,11 @@
+     dir->client_process = NULL;
+     set_fd_user( fd, &dir_fd_ops, &dir->obj );
+ 
++    if (sd) dir_set_sd( &dir->obj, sd, OWNER_SECURITY_INFORMATION |
++                                       GROUP_SECURITY_INFORMATION |
++                                       DACL_SECURITY_INFORMATION |
++                                       SACL_SECURITY_INFORMATION );
++
+     dir_add_to_existing_notify( dir );
+ 
+     return &dir->obj;
+--- a/server/d3dkmt.c
++++ b/server/d3dkmt.c
+@@ -714,3 +714,121 @@
+ 
+     release_object( mutex );
+ }
++
++#define COMPOSITION_QUERY_STATE  0x1
++#define COMPOSITION_MODIFY_STATE 0x2
++
++static const WCHAR composition_name[] = {'C','o','m','p','o','s','i','t','i','o','n',0};
++
++struct type_descr composition_type =
++{
++    { composition_name, sizeof(composition_name) },                     /* name */
++    COMPOSITION_QUERY_STATE,                                            /* valid_access */
++    {                                                                   /* mapping */
++        STANDARD_RIGHTS_READ | COMPOSITION_QUERY_STATE,
++        STANDARD_RIGHTS_READ | COMPOSITION_MODIFY_STATE,
++        STANDARD_RIGHTS_READ,
++        STANDARD_RIGHTS_REQUIRED | COMPOSITION_QUERY_STATE | COMPOSITION_MODIFY_STATE,
++    },
++};
++
++struct composition
++{
++    struct object obj;                      /* object header */
++    struct process *process;                /* owner process */
++    client_ptr_t target_root;               /* root IDCompositionVisual pointer for the target created from this shared visual */
++};
++
++static void composition_dump( struct object *obj, int verbose );
++static void composition_destroy( struct object *obj );
++
++static const struct object_ops composition_ops =
++{
++    .size = sizeof(struct composition),             /* size */
++    .type = &composition_type,                      /* type */
++    .dump = composition_dump,                       /* dump */
++    .destroy = composition_destroy,                /* destroy */
++};
++
++static void composition_dump( struct object *obj, int verbose )
++{
++    assert( obj->ops == &composition_ops );
++    fprintf( stderr, "Compositon\n" );
++}
++
++static void composition_destroy( struct object *obj )
++{
++    struct composition *composition = (struct composition *)obj;
++
++    release_object( composition->process );
++}
++
++static struct composition *get_composition_obj( struct process *process, obj_handle_t handle, unsigned int access )
++{
++    return (struct composition *)get_handle_obj( process, handle, access, &composition_ops );
++}
++
++static struct composition *create_composition(void)
++{
++    struct composition *composition;
++
++    if ((composition = alloc_object( &composition_ops )))
++    {
++        composition->target_root = 0;
++        composition->process = (struct process *)grab_object( current->process );
++    }
++
++    return composition;
++}
++
++/* Create a DirectComposition shared visual handle */
++DECL_HANDLER(dcomp_create_shared_visual)
++{
++    struct composition *composition;
++
++    if ((composition = create_composition()))
++    {
++        reply->handle = alloc_handle_no_access_check( current->process, composition, 0, 0 );
++        release_object( composition );
++    }
++}
++
++
++/* Set info for a DirectComposition shared visual object */
++DECL_HANDLER(dcomp_set_shared_visual_info)
++{
++    struct composition *composition;
++
++    composition = get_composition_obj( current->process, req->handle, 0);
++    if (!composition) return;
++
++    if (composition->process != current->process)
++    {
++        release_object( composition );
++        set_error(STATUS_NOT_IMPLEMENTED);
++        return;
++    }
++
++    composition->target_root = req->target_root;
++    release_object( composition );
++}
++
++
++/* Get info for a DirectComposition shared visual */
++DECL_HANDLER(dcomp_get_shared_visual_info)
++{
++    struct composition *composition;
++
++    composition = get_composition_obj( current->process, req->handle, 0);
++    if (!composition) return;
++
++    if (composition->process != current->process)
++    {
++        release_object( composition );
++        set_error(STATUS_NOT_IMPLEMENTED);
++        return;
++    }
++
++    reply->target_root = composition->target_root;
++    release_object( composition );
++}
+--- a/server/directory.c
++++ b/server/directory.c
+@@ -138,6 +138,7 @@
+     &apc_reserve_type,
+     &completion_reserve_type,
+     &alpc_port_type,
++    &composition_type,
+ };
+ 
+ static void object_type_dump( struct object *obj, int verbose )
+--- a/server/fd.c
++++ b/server/fd.c
+@@ -1941,20 +1941,66 @@
+         {
+             /* check for trailing slash on file path */
+             if ((errno == ENOENT || (errno == ENOTDIR && !(options & FILE_DIRECTORY_FILE))) && name[strlen(name) - 1] == '/')
++            {
+                 set_error( STATUS_OBJECT_NAME_INVALID );
++                goto error;
++            }
++
++            if (stat( name, &st ))
++            {
++                file_set_error();
++                goto error;
++            }
++
++            /* POSIX requires that open(2) throws EOPNOTSUPP when `path` is a Unix
++             * socket. BSD throws EOPNOTSUPP in this case and the additional case of
++             * O_SHLOCK or O_EXLOCK being passed when `path` resides on a filesystem
++             * without lock support. Contrary to POSIX, Linux returns ENXIO in this
++             * case, so we also check that error code here.
++             */
++            if ((errno == EOPNOTSUPP || errno == ENXIO) && S_ISSOCK(st.st_mode))
++            {
++                /* Windows exposes a bound AF_UNIX socket as a reparse point: opening it
++                 * without FILE_OPEN_REPARSE_POINT fails with STATUS_IO_REPARSE_TAG_NOT_HANDLED,
++                 * and with the flag it yields a handle that only carries metadata, which is
++                 * what O_PATH gives us here.
++                 */
++                if (options & FILE_DELETE_ON_CLOSE)
++                    ; /* no error, go to regular deletion code path */
++                else if (!(options & FILE_OPEN_REPARSE_POINT))
++                {
++                    set_error( STATUS_IO_REPARSE_TAG_NOT_HANDLED );
++                    goto error;
++                }
++                else
++                {
++#ifdef O_PATH
++                    fd->unix_fd = open( name, O_PATH );
++#endif
++                    if (fd->unix_fd == -1)
++                    {
++                        file_set_error();
++                        goto error;
++                    }
++                }
++            }
+             else
++            {
+                 file_set_error();
+-            goto error;
++                goto error;
++            }
+         }
+     }
+ 
+     fd->nt_name = dup_nt_name( root, nt_name, &fd->nt_namelen );
+     fd->unix_name = NULL;
+-    fstat( fd->unix_fd, &st );
++    /* st was set from the file name if the file could not be opened */
++    if (fd->unix_fd != -1)
++        fstat( fd->unix_fd, &st );
+     *mode = st.st_mode;
+ 
+     /* only bother with an inode for normal files and directories */
+-    if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode))
++    if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode) || S_ISSOCK(st.st_mode))
+     {
+         unsigned int err;
+         struct inode *inode = get_inode( st.st_dev, st.st_ino, fd->unix_fd );
+@@ -2016,7 +2062,10 @@
+                 set_error( STATUS_OBJECT_NAME_COLLISION );
+                 goto error;
+             }
+-            ftruncate( fd->unix_fd, 0 );
++            if (fd->unix_fd != -1)
++                ftruncate( fd->unix_fd, 0 );
++            else
++                truncate( fd->unix_name, 0 );
+         }
+     }
+     else  /* special file */
+@@ -2465,6 +2514,7 @@
+     /* we can't just allocate get_reply_max_size() here;
+      * Linux won't return any data if the size is too small */
+     char buffer[MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
++    struct stat st;
+     int ret;
+ 
+     if (!fd->unix_name)
+@@ -2476,6 +2526,26 @@
+     if (!get_reply_max_size())
+     {
+         set_error( STATUS_INVALID_USER_BUFFER );
++        return;
++    }
++
++    /* A bound AF_UNIX socket carries its reparse tag in the inode type, not in the
++     * name suffix and extended attribute the other reparse points use. Windows
++     * reports IO_REPARSE_TAG_AF_UNIX with no reparse data at all. */
++    if (fd->unix_fd != -1 && !fstat( fd->unix_fd, &st ) && S_ISSOCK( st.st_mode ))
++    {
++        REPARSE_DATA_BUFFER *data = (REPARSE_DATA_BUFFER *)buffer;
++        unsigned int size = sizeof(data->ReparseTag) + sizeof(data->ReparseDataLength)
++                            + sizeof(data->Reserved);
++
++        if (get_reply_max_size() < size)
++        {
++            set_error( STATUS_BUFFER_TOO_SMALL );
++            return;
++        }
++        memset( data, 0, size );
++        data->ReparseTag = IO_REPARSE_TAG_AF_UNIX;
++        set_reply_data( data, size );
+         return;
+     }
+ 
+--- a/server/file.c
++++ b/server/file.c
+@@ -31,11 +31,22 @@
+ #include <sys/time.h>
+ #include <sys/types.h>
+ #include <time.h>
++#include <limits.h>
+ #include <unistd.h>
+ #ifdef HAVE_UTIME_H
+ #include <utime.h>
+ #endif
+ #include <poll.h>
++#ifdef HAVE_ATTR_XATTR_H
++#undef XATTR_ADDITIONAL_OPTIONS
++#include <attr/xattr.h>
++#elif defined(HAVE_SYS_XATTR_H)
++#include <sys/xattr.h>
++#endif
++#ifdef HAVE_SYS_EXTATTR_H
++#undef XATTR_ADDITIONAL_OPTIONS
++#include <sys/extattr.h>
++#endif
+ 
+ #include "ntstatus.h"
+ #include "windef.h"
+@@ -61,6 +72,24 @@
+         FILE_ALL_ACCESS
+     },
+ };
++
++#ifndef XATTR_USER_PREFIX
++#define XATTR_USER_PREFIX "user."
++#endif
++#ifndef XATTR_USER_PREFIX_LEN
++#define XATTR_USER_PREFIX_LEN (sizeof(XATTR_USER_PREFIX) - 1)
++#endif
++#ifndef XATTR_SIZE_MAX
++#define XATTR_SIZE_MAX    65536
++#endif
++
++/* We intentionally do not match the Samba 4 extended attribute for NT security descriptors (SDs):
++ *  1) Samba stores this information using an internal data structure (we use a flat NT SD).
++ *  2) Samba uses the attribute "security.NTACL".  This attribute is within a namespace that only
++ *     the administrator has write access to, which prohibits the user from copying the attributes
++ *     when copying a file and would require Wine to run with adminstrative privileges.
++ */
++#define WINE_XATTR_SD  XATTR_USER_PREFIX "wine.sd"
+ 
+ struct file
+ {
+@@ -169,7 +198,8 @@
+     return file;
+ }
+ 
+-static struct object *create_file_obj( struct fd *fd, unsigned int access, mode_t mode )
++static struct object *create_file_obj( struct fd *fd, unsigned int access, mode_t mode,
++                                       const struct security_descriptor *sd )
+ {
+     struct file *file = alloc_object( &file_ops );
+ 
+@@ -181,6 +211,12 @@
+     list_init( &file->kernel_object );
+     grab_object( fd );
+     set_fd_user( fd, &file_fd_ops, &file->obj );
++
++    if (sd) file_set_sd( &file->obj, sd, OWNER_SECURITY_INFORMATION |
++                                         GROUP_SECURITY_INFORMATION |
++                                         DACL_SECURITY_INFORMATION |
++                                         SACL_SECURITY_INFORMATION );
++
+     return &file->obj;
+ }
+ 
+@@ -188,6 +224,72 @@
+ {
+     int len = strlen( name );
+     return len >= 4 && (!strcasecmp( name + len - 4, ".exe") || !strcasecmp( name + len - 4, ".com" ));
++}
++
++#ifdef HAVE_SYS_EXTATTR_H
++static inline int xattr_valid_namespace( const char *name )
++{
++    if (strncmp( XATTR_USER_PREFIX, name, XATTR_USER_PREFIX_LEN ) != 0)
++    {
++        errno = EPERM;
++        return 0;
++    }
++    return 1;
++}
++#endif
++
++static int xattr_fget( int filedes, const char *name, void *value, size_t size )
++{
++#if defined(XATTR_ADDITIONAL_OPTIONS)
++    return fgetxattr( filedes, name, value, size, 0, 0 );
++#elif defined(HAVE_SYS_XATTR_H) || defined(HAVE_ATTR_XATTR_H)
++    return fgetxattr( filedes, name, value, size );
++#elif defined(HAVE_SYS_EXTATTR_H)
++    if (!xattr_valid_namespace( name )) return -1;
++    return extattr_get_fd( filedes, EXTATTR_NAMESPACE_USER, &name[XATTR_USER_PREFIX_LEN],
++                           value, size );
++#else
++    errno = ENOSYS;
++    return -1;
++#endif
++}
++
++static int xattr_fset( int filedes, const char *name, void *value, size_t size )
++{
++#if defined(XATTR_ADDITIONAL_OPTIONS)
++    return fsetxattr( filedes, name, value, size, 0, 0 );
++#elif defined(HAVE_SYS_XATTR_H) || defined(HAVE_ATTR_XATTR_H)
++    return fsetxattr( filedes, name, value, size, 0 );
++#elif defined(HAVE_SYS_EXTATTR_H)
++    if (!xattr_valid_namespace( name )) return -1;
++    return extattr_set_fd( filedes, EXTATTR_NAMESPACE_USER, &name[XATTR_USER_PREFIX_LEN],
++                           value, size );
++#else
++    errno = ENOSYS;
++    return -1;
++#endif
++}
++
++static void set_xattr_sd( int fd, const struct security_descriptor *sd )
++{
++    char buffer[XATTR_SIZE_MAX];
++    int present, len;
++    const struct acl *dacl;
++
++    /* there's no point in storing the security descriptor if there's no DACL */
++    if (!sd) return;
++    dacl = sd_get_dacl( sd, &present );
++    if (!present || !dacl) return;
++
++    len = 2 + sizeof(struct security_descriptor) + sd->owner_len +
++          sd->group_len + sd->sacl_len + sd->dacl_len;
++    if (len > XATTR_SIZE_MAX) return;
++
++    /* include the descriptor revision and resource manager control bits */
++    buffer[0] = SECURITY_DESCRIPTOR_REVISION;
++    buffer[1] = 0;
++    memcpy( &buffer[2], sd, len - 2 );
++    xattr_fset( fd, WINE_XATTR_SD, buffer, len );
+ }
+ 
+ static struct object *create_file( struct fd *root, const char *nameptr, data_size_t len,
+@@ -253,11 +355,11 @@
+     if (!fd) goto done;
+ 
+     if (S_ISDIR(mode))
+-        obj = create_dir_obj( fd, access, mode );
++        obj = create_dir_obj( fd, access, mode, sd );
+     else if (S_ISCHR(mode) && is_serial_fd( fd ))
+         obj = create_serial( fd );
+     else
+-        obj = create_file_obj( fd, access, mode );
++        obj = create_file_obj( fd, access, mode, sd );
+ 
+     release_object( fd );
+ 
+@@ -367,34 +469,88 @@
+     return sd;
+ }
+ 
+-static struct security_descriptor *file_get_sd( struct object *obj )
+-{
+-    struct file *file = (struct file *)obj;
++/* Convert generic rights into standard access rights */
++static void convert_generic_sd( struct security_descriptor *sd )
++{
++    const struct acl *dacl;
++    int present;
++
++    dacl = sd_get_dacl( sd, &present );
++    if (present && dacl)
++    {
++        const struct ace *ace = (const struct ace *)(dacl + 1);
++        ULONG i;
++
++        for (i = 0; i < dacl->count; i++, ace = ace_next( ace ))
++        {
++            DWORD *mask = (DWORD *)(ace + 1);
++            *mask = map_access( *mask, &file_type.mapping );
++        }
++    }
++}
++
++static struct security_descriptor *get_xattr_sd( int fd )
++{
++    struct security_descriptor *sd;
++    char buffer[XATTR_SIZE_MAX];
++    int n;
++
++    n = xattr_fget( fd, WINE_XATTR_SD, buffer, sizeof(buffer) );
++    if (n == -1 || n < 2 + sizeof(struct security_descriptor)) return NULL;
++
++    /* validate that we can handle the descriptor */
++    if (buffer[0] != SECURITY_DESCRIPTOR_REVISION || buffer[1] != 0 ||
++            !sd_is_valid( (struct security_descriptor *)&buffer[2], n - 2 ))
++        return NULL;
++
++    sd = mem_alloc( n - 2 );
++    if (sd)
++    {
++        memcpy( sd, &buffer[2], n - 2 );
++        convert_generic_sd( sd ); /* for backwards compatibility */
++    }
++    return sd;
++}
++
++struct security_descriptor *get_file_sd( struct object *obj, struct fd *fd, mode_t *mode,
++                                         uid_t *uid )
++{
++    int unix_fd = get_unix_fd( fd );
+     struct stat st;
+-    int unix_fd;
+     struct security_descriptor *sd;
+-
+-    assert( obj->ops == &file_ops );
+-
+-    unix_fd = get_file_unix_fd( file );
+ 
+     if (unix_fd == -1 || fstat( unix_fd, &st ) == -1)
+         return obj->sd;
+ 
+     /* mode and uid the same? if so, no need to re-generate security descriptor */
+-    if (obj->sd && (st.st_mode & (S_IRWXU|S_IRWXO)) == (file->mode & (S_IRWXU|S_IRWXO)) &&
+-        (st.st_uid == file->uid))
++    if (obj->sd && (st.st_mode & (S_IRWXU|S_IRWXO)) == (*mode & (S_IRWXU|S_IRWXO)) &&
++        (st.st_uid == *uid))
+         return obj->sd;
+ 
+-    sd = mode_to_sd( st.st_mode,
+-                     security_unix_uid_to_sid( st.st_uid ),
+-                     token_get_primary_group( current->process->token ));
++    sd = get_xattr_sd( unix_fd );
++    if (!sd) sd = mode_to_sd( st.st_mode,
++                              security_unix_uid_to_sid( st.st_uid ),
++                              token_get_primary_group( current->process->token ));
+     if (!sd) return obj->sd;
+ 
+-    file->mode = st.st_mode;
+-    file->uid = st.st_uid;
++    *mode = st.st_mode;
++    *uid = st.st_uid;
+     free( obj->sd );
+     obj->sd = sd;
++    return sd;
++}
++
++static struct security_descriptor *file_get_sd( struct object *obj )
++{
++    struct file *file = (struct file *)obj;
++    struct security_descriptor *sd;
++    struct fd *fd;
++
++    assert( obj->ops == &file_ops );
++
++    fd = file_get_fd( obj );
++    sd = get_file_sd( obj, fd, &file->mode, &file->uid );
++    release_object( fd );
+     return sd;
+ }
+ 
+@@ -477,54 +633,75 @@
+     return new_mode;
+ }
+ 
+-static int file_set_sd( struct object *obj, const struct security_descriptor *sd,
+-                        unsigned int set_info )
+-{
+-    struct file *file = (struct file *)obj;
+-    const struct sid *owner;
++int set_file_sd( struct object *obj, struct fd *fd, mode_t *mode, uid_t *uid,
++                 const struct security_descriptor *sd, unsigned int set_info )
++{
++    struct security_descriptor *new_sd;
++    int unix_fd = get_unix_fd( fd );
++    const struct sid *owner, *group;
+     struct stat st;
+-    mode_t mode;
+-    int unix_fd;
+-
+-    assert( obj->ops == &file_ops );
+-
+-    unix_fd = get_file_unix_fd( file );
+-
+-    if (unix_fd == -1 || fstat( unix_fd, &st ) == -1) return 1;
+-
+-    if (set_info & OWNER_SECURITY_INFORMATION)
+-    {
+-        owner = sd_get_owner( sd );
+-        if (!owner)
++    mode_t new_mode;
++
++    if (!set_info || unix_fd == -1 || fstat( unix_fd, &st ) == -1) return 1;
++    if (!obj->sd) get_file_sd( obj, fd, mode, uid );
++
++    /* calculate the new sd, save to a temporary variable before assigning */
++    new_sd = set_sd_from_token_internal( sd, obj->sd, set_info, current->process->token );
++    if (new_sd)
++     {
++        /* convert generic rights into standard access rights */
++        convert_generic_sd( new_sd );
++
++        if (set_info & OWNER_SECURITY_INFORMATION)
++         {
++            owner = sd_get_owner( new_sd );
++            assert( owner );
++
++            if (!obj->sd || !equal_sid( owner, sd_get_owner( obj->sd ) ))
++            {
++                /* FIXME: get Unix uid and call fchown */
++            }
++         }
++
++        if (set_info & GROUP_SECURITY_INFORMATION)
++         {
++            group = sd_get_group( new_sd );
++            assert( group );
++
++            if (!obj->sd || !equal_sid( group, sd_get_group( obj->sd ) ))
++            {
++                /* FIXME: get Unix uid and call fchown */
++            }
++         }
++
++        if (set_info & DACL_SECURITY_INFORMATION)
+         {
+-            set_error( STATUS_INVALID_SECURITY_DESCR );
+-            return 0;
+-        }
+-        if (!obj->sd || !equal_sid( owner, sd_get_owner( obj->sd ) ))
+-        {
+-            /* FIXME: get Unix uid and call fchown */
+-        }
+-    }
+-    else if (obj->sd)
+-        owner = sd_get_owner( obj->sd );
+-    else
+-        owner = token_get_owner( current->process->token );
+-
+-    /* group and sacl not supported */
+-
+-    if (set_info & DACL_SECURITY_INFORMATION)
+-    {
+-        /* keep the bits that we don't map to access rights in the ACL */
+-        mode = st.st_mode & (S_ISUID|S_ISGID|S_ISVTX);
+-        mode |= sd_to_mode( sd, owner );
+-
+-        if (((st.st_mode ^ mode) & (S_IRWXU|S_IRWXG|S_IRWXO)) && fchmod( unix_fd, mode ) == -1)
+-        {
+-            file_set_error();
+-            return 0;
+-        }
+-    }
+-    return 1;
++            owner = sd_get_owner( new_sd );
++            assert( owner );
++
++            /* keep the bits that we don't map to access rights in the ACL */
++            new_mode = st.st_mode & (S_ISUID|S_ISGID|S_ISVTX);
++            new_mode |= sd_to_mode( new_sd, owner );
++
++            if (((st.st_mode ^ new_mode) & (S_IRWXU|S_IRWXG|S_IRWXO)) && fchmod( unix_fd, new_mode ) == -1)
++            {
++                free( new_sd );
++                file_set_error();
++                return 0;
++            }
++
++            *mode = (*mode & S_IFMT) | new_mode;
++         }
++
++        /* extended attributes are set after the file mode, to ensure it stays in sync */
++        set_xattr_sd( unix_fd, new_sd );
++
++        free( obj->sd );
++        obj->sd = new_sd;
++        return 1;
++     }
++
++    return 0;
+ }
+ 
+ static struct object *file_lookup_name( struct object *obj, struct unicode_str *name,
+@@ -559,6 +736,21 @@
+ {
+     struct file *file = (struct file *)obj;
+     return &file->kernel_object;
++}
++
++static int file_set_sd( struct object *obj, const struct security_descriptor *sd,
++                        unsigned int set_info )
++{
++    struct file *file = (struct file *)obj;
++    struct fd *fd;
++    int ret;
++
++    assert( obj->ops == &file_ops );
++
++    fd = file_get_fd( obj );
++    ret = set_file_sd( obj, fd, &file->mode, &file->uid, sd, set_info );
++    release_object( fd );
++    return ret;
+ }
+ 
+ static void file_destroy( struct object *obj )
+@@ -646,7 +838,10 @@
+     if ((file = create_file( root_fd, name, name_len, params.name, req->access, req->sharing,
+                              req->create, req->options, req->attrs, params.sd )))
+     {
+-        reply->handle = alloc_handle( current->process, file, req->access, params.attr );
++        if (get_error() == STATUS_OBJECT_NAME_EXISTS)
++            reply->handle = alloc_handle( current->process, file, req->access,  params.attr );
++        else
++            reply->handle = alloc_handle_no_access_check( current->process, file, req->access,  params.attr );
+         release_object( file );
+     }
+     if (root_fd) release_object( root_fd );
+--- a/server/file.h
++++ b/server/file.h
+@@ -161,6 +161,10 @@
+ extern struct security_descriptor *mode_to_sd( mode_t mode, const struct sid *user, const struct sid *group );
+ extern mode_t sd_to_mode( const struct security_descriptor *sd, const struct sid *owner );
+ extern int is_file_executable( const char *name );
++extern int set_file_sd( struct object *obj, struct fd *fd, mode_t *mode, uid_t *uid,
++                        const struct security_descriptor *sd, unsigned int set_info );
++extern struct security_descriptor *get_file_sd( struct object *obj, struct fd *fd, mode_t *mode,
++                                                uid_t *uid );
+ 
+ /* file mapping functions */
+ 
+@@ -222,7 +226,8 @@
+ 
+ extern void do_change_notify( int unix_fd );
+ extern void sigio_callback(void);
+-extern struct object *create_dir_obj( struct fd *fd, unsigned int access, mode_t mode );
++extern struct object *create_dir_obj( struct fd *fd, unsigned int access, mode_t mode,
++                                      const struct security_descriptor *sd );
+ extern struct dir *get_dir_obj( struct process *process, obj_handle_t handle, unsigned int access );
+ 
+ /* completion */
+--- a/server/object.c
++++ b/server/object.c
+@@ -652,8 +652,9 @@
+ 
+ /* functions for unimplemented/default object operations */
+ 
+-int set_sd_defaults_from_token( struct object *obj, const struct security_descriptor *sd,
+-                                unsigned int set_info, struct token *token )
++struct security_descriptor *set_sd_from_token_internal( const struct security_descriptor *sd,
++                                                        const struct security_descriptor *old_sd,
++                                                        unsigned int set_info, struct token *token )
+ {
+     struct security_descriptor new_sd, *new_sd_ptr;
+     int present;
+@@ -662,8 +663,6 @@
+     struct acl *replaced_sacl = NULL;
+     char *ptr;
+ 
+-    if (!set_info) return 1;
+-
+     new_sd.control = sd->control & ~SE_SELF_RELATIVE;
+ 
+     if (set_info & OWNER_SECURITY_INFORMATION && sd->owner_len)
+@@ -671,10 +670,10 @@
+         owner = sd_get_owner( sd );
+         new_sd.owner_len = sd->owner_len;
+     }
+-    else if (obj->sd && obj->sd->owner_len)
+-    {
+-        owner = sd_get_owner( obj->sd );
+-        new_sd.owner_len = obj->sd->owner_len;
++    else if (old_sd && old_sd->owner_len)
++    {
++        owner = sd_get_owner( old_sd );
++        new_sd.owner_len = old_sd->owner_len;
+     }
+     else if (token)
+     {
+@@ -688,10 +687,10 @@
+         group = sd_get_group( sd );
+         new_sd.group_len = sd->group_len;
+     }
+-    else if (obj->sd && obj->sd->group_len)
+-    {
+-        group = sd_get_group( obj->sd );
+-        new_sd.group_len = obj->sd->group_len;
++    else if (old_sd && old_sd->group_len)
++    {
++        group = sd_get_group( old_sd );
++        new_sd.group_len = old_sd->group_len;
+     }
+     else if (token)
+     {
+@@ -709,20 +708,20 @@
+     else if (set_info & LABEL_SECURITY_INFORMATION && present)
+     {
+         const struct acl *old_sacl = NULL;
+-        if (obj->sd && obj->sd->control & SE_SACL_PRESENT) old_sacl = sd_get_sacl( obj->sd, &present );
+-        if (!(replaced_sacl = replace_security_labels( old_sacl, sacl ))) return 0;
++        if (old_sd && old_sd->control & SE_SACL_PRESENT) old_sacl = sd_get_sacl( old_sd, &present );
++        if (!(replaced_sacl = replace_security_labels( old_sacl, sacl ))) return NULL;
+         new_sd.control |= SE_SACL_PRESENT;
+         new_sd.sacl_len = replaced_sacl->size;
+         sacl = replaced_sacl;
+     }
+     else
+     {
+-        if (obj->sd) sacl = sd_get_sacl( obj->sd, &present );
+-
+-        if (obj->sd && present)
++        if (old_sd) sacl = sd_get_sacl( old_sd, &present );
++
++        if (old_sd && present)
+         {
+             new_sd.control |= SE_SACL_PRESENT;
+-            new_sd.sacl_len = obj->sd->sacl_len;
++            new_sd.sacl_len = old_sd->sacl_len;
+         }
+         else
+             new_sd.sacl_len = 0;
+@@ -736,12 +735,12 @@
+     }
+     else
+     {
+-        if (obj->sd) dacl = sd_get_dacl( obj->sd, &present );
+-
+-        if (obj->sd && present)
++        if (old_sd) dacl = sd_get_dacl( old_sd, &present );
++
++        if (old_sd && present)
+         {
+             new_sd.control |= SE_DACL_PRESENT;
+-            new_sd.dacl_len = obj->sd->dacl_len;
++            new_sd.dacl_len = old_sd->dacl_len;
+         }
+         else if (token)
+         {
+@@ -757,7 +756,7 @@
+     if (!ptr)
+     {
+         free( replaced_sacl );
+-        return 0;
++        return NULL;
+     }
+     new_sd_ptr = (struct security_descriptor*)ptr;
+ 
+@@ -768,9 +767,25 @@
+     mem_append( ptr, dacl, new_sd.dacl_len );
+ 
+     free( replaced_sacl );
+-    free( obj->sd );
+-    obj->sd = new_sd_ptr;
+-    return 1;
++    return new_sd_ptr;
++}
++
++int set_sd_defaults_from_token( struct object *obj, const struct security_descriptor *sd,
++                                unsigned int set_info, struct token *token )
++{
++    struct security_descriptor *new_sd;
++
++    if (!set_info) return 1;
++
++    new_sd = set_sd_from_token_internal( sd, obj->sd, set_info, token );
++    if (new_sd)
++    {
++        free( obj->sd );
++        obj->sd = new_sd;
++        return 1;
++    }
++
++    return 0;
+ }
+ 
+ /** Set the security descriptor using the current primary token for defaults. */
+--- a/server/object.h
++++ b/server/object.h
+@@ -187,6 +187,9 @@
+ extern struct fd *get_obj_fd( struct object *obj );
+ extern struct object *get_obj_sync( struct object *obj );
+ extern int default_set_sd( struct object *obj, const struct security_descriptor *sd, unsigned int set_info );
++extern struct security_descriptor *set_sd_from_token_internal( const struct security_descriptor *sd,
++                                                               const struct security_descriptor *old_sd,
++                                                               unsigned int set_info, struct token *token );
+ extern int set_sd_defaults_from_token( struct object *obj, const struct security_descriptor *sd,
+                                        unsigned int set_info, struct token *token );
+ #ifdef DEBUG_OBJECTS
+@@ -387,6 +390,7 @@
+ extern struct type_descr apc_reserve_type;
+ extern struct type_descr completion_reserve_type;
+ extern struct type_descr alpc_port_type;
++extern struct type_descr composition_type;
+ 
+ #define KEYEDEVENT_WAIT       0x0001
+ #define KEYEDEVENT_WAKE       0x0002
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -4338,3 +4338,25 @@
+ @REPLY
+     obj_handle_t        handle;         /* handle to the ALPC port */
+ @END
++
++
++/* Create a DirectComposition shared visual handle */
++@REQ(dcomp_create_shared_visual)
++@REPLY
++    obj_handle_t  handle;                     /* created shared visual handle */
++@END
++
++
++/* Set info for a DirectComposition shared visual object */
++@REQ(dcomp_set_shared_visual_info)
++    obj_handle_t  handle;                    /* shared visual handle */
++    client_ptr_t  target_root;               /* root IDCompositionVisual pointer for the target created from this shared visual */
++@END
++
++
++/* Get info for a DirectComposition shared visual */
++@REQ(dcomp_get_shared_visual_info)
++    obj_handle_t  handle;                     /* shared visual handle */
++@REPLY
++    client_ptr_t  target_root;                /* root IDCompositionVisual pointer for the target created from this shared visual */
++@END
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -146,6 +146,7 @@
+     struct hook_table     *hooks;           /* hook table */
+     int                    keystate_lock;   /* owns an input keystate lock */
+     queue_shm_t           *shared;          /* queue in session shared memory */
++    unsigned int           ignore_post_msg; /* ignore post messages newer than this unique id */
+ };
+ 
+ struct hotkey
+@@ -285,6 +286,8 @@
+         queue->input           = (struct thread_input *)grab_object( input );
+         queue->hooks           = NULL;
+         queue->keystate_lock   = 0;
++        queue->ignore_post_msg = 0;
++
+         list_init( &queue->send_result );
+         list_init( &queue->callback_result );
+         list_init( &queue->pending_timers );
+@@ -798,10 +801,18 @@
+ }
+ 
+ /* get a (pseudo-)unique id to tag hardware messages */
+-static inline unsigned int get_unique_id(void)
++static inline unsigned int get_unique_hw_id(void)
+ {
+     static unsigned int id;
+     if (!++id) id = 1;  /* avoid an id of 0 */
++    return id;
++}
++
++/* get unique increasing id to tag post messages */
++static inline unsigned int get_unique_post_id(void)
++{
++    static unsigned int id;
++    if (!++id) id = 1;
+     return id;
+ }
+ 
+@@ -1155,7 +1166,7 @@
+ }
+ 
+ /* retrieve a posted message */
+-static int get_posted_message( struct msg_queue *queue, user_handle_t win,
++static int get_posted_message( struct msg_queue *queue, unsigned int ignore_msg, user_handle_t win,
+                                unsigned int first, unsigned int last, unsigned int flags,
+                                struct get_message_reply *reply )
+ {
+@@ -1166,6 +1177,7 @@
+     {
+         if (!match_window( win, msg->win )) continue;
+         if (!check_msg_filter( msg->msg, first, last )) continue;
++        if (ignore_msg && (int)(msg->unique_id - ignore_msg) >= 0) continue;
+         goto found; /* found one */
+     }
+     return 0;
+@@ -1741,6 +1753,7 @@
+     msg->msg       = WM_HOTKEY;
+     msg->wparam    = hotkey->id;
+     msg->lparam    = ((hotkey->vkey & 0xffff) << 16) | modifiers;
++    msg->unique_id = get_unique_hw_id();
+ 
+     free( msg->data );
+     msg->data      = NULL;
+@@ -2764,7 +2777,7 @@
+         }
+ 
+         /* now we can return it */
+-        if (!msg->unique_id) msg->unique_id = get_unique_id();
++        if (!msg->unique_id) msg->unique_id = get_unique_hw_id();
+         reply->type   = MSG_HARDWARE;
+         reply->win    = win;
+         reply->msg    = msg_code;
+@@ -2904,6 +2917,7 @@
+         msg->result    = NULL;
+         msg->data      = NULL;
+         msg->data_size = 0;
++        msg->unique_id = get_unique_post_id();
+ 
+         get_message_defaults( thread->queue, &msg->x, &msg->y, &msg->time );
+ 
+@@ -3189,6 +3203,7 @@
+             set_queue_bits( recv_queue, QS_SENDMESSAGE );
+             break;
+         case MSG_POSTED:
++            msg->unique_id = get_unique_post_id();
+             list_add_tail( &recv_queue->msg_list[POST_MESSAGE], &msg->entry );
+             set_queue_bits( recv_queue, QS_POSTMESSAGE|QS_ALLPOSTMESSAGE );
+             if (msg->msg == WM_HOTKEY)
+@@ -3330,12 +3345,12 @@
+ 
+     /* then check for posted messages */
+     if ((filter & QS_POSTMESSAGE) &&
+-        get_posted_message( queue, get_win, req->get_first, req->get_last, req->flags, reply ))
++        get_posted_message( queue, queue->ignore_post_msg, get_win, req->get_first, req->get_last, req->flags, reply ))
+         return;
+ 
+     if ((filter & QS_HOTKEY) && queue->hotkey_count &&
+         req->get_first <= WM_HOTKEY && req->get_last >= WM_HOTKEY &&
+-        get_posted_message( queue, get_win, WM_HOTKEY, WM_HOTKEY, req->flags, reply ))
++        get_posted_message( queue, queue->ignore_post_msg, get_win, WM_HOTKEY, WM_HOTKEY, req->flags, reply ))
+         return;
+ 
+     /* only check for quit messages if not posted messages pending */
+@@ -3346,7 +3361,7 @@
+     if ((filter & QS_INPUT) &&
+         filter_contains_hw_range( req->get_first, req->get_last ) &&
+         get_hardware_message( current, req->hw_id, get_win, req->get_first, req->get_last, req->flags, reply ))
+-        return;
++        goto found_msg;
+ 
+     /* now check for WM_PAINT */
+     if ((filter & QS_PAINT) &&
+@@ -3359,7 +3374,7 @@
+         reply->wparam = 0;
+         reply->lparam = 0;
+         get_message_defaults( queue, &reply->x, &reply->y, &reply->time );
+-        return;
++        goto found_msg;
+     }
+ 
+     /* now check for timer */
+@@ -3373,8 +3388,20 @@
+         reply->wparam = timer->id;
+         reply->lparam = timer->lparam;
+         get_message_defaults( queue, &reply->x, &reply->y, &reply->time );
++        goto found_msg;
++    }
++
++    /* if we previously skipped posted messages then check again */
++    if (queue->ignore_post_msg && (filter & QS_POSTMESSAGE) &&
++        get_posted_message( queue, 0, get_win, req->get_first, req->get_last, req->flags, reply ))
+         return;
+-    }
++
++    if (queue->ignore_post_msg && (filter & QS_HOTKEY) && queue->hotkey_count &&
++        req->get_first <= WM_HOTKEY && req->get_last >= WM_HOTKEY &&
++        get_posted_message( queue, 0, get_win, WM_HOTKEY, WM_HOTKEY, req->flags, reply ))
++        return;
++
++    if (get_win == -1 && current->process->idle_event) set_event( current->process->idle_event );
+ 
+     SHARED_WRITE_BEGIN( queue_shm, queue_shm_t )
+     {
+@@ -3386,6 +3413,13 @@
+     if (!get_queue_status( queue )) reset_sync( queue->sync );
+     else signal_sync( queue->sync );
+     set_error( STATUS_PENDING );  /* FIXME */
++    return;
++
++found_msg:
++    if (req->flags & PM_REMOVE)
++        queue->ignore_post_msg = 0;
++    else if (!queue->ignore_post_msg)
++        queue->ignore_post_msg = get_unique_post_id();
+ }
+ 
+ 
+@@ -3403,7 +3437,10 @@
+ DECL_HANDLER(accept_hardware_message)
+ {
+     if (current->queue)
++    {
+         release_hardware_message( current->queue, req->hw_id );
++        current->queue->ignore_post_msg = 0;
++    }
+     else
+         set_error( STATUS_ACCESS_DENIED );
+ }
+--- a/server/request_handlers.h
++++ b/server/request_handlers.h
+@@ -315,6 +315,9 @@
+ DECL_HANDLER(d3dkmt_mutex_acquire);
+ DECL_HANDLER(d3dkmt_mutex_release);
+ DECL_HANDLER(alpc_create_port);
++DECL_HANDLER(dcomp_create_shared_visual);
++DECL_HANDLER(dcomp_set_shared_visual_info);
++DECL_HANDLER(dcomp_get_shared_visual_info);
+ 
+ typedef void (*req_handler)( const void *req, void *reply );
+ static const req_handler req_handlers[REQ_NB_REQUESTS] =
+@@ -627,6 +630,9 @@
+     (req_handler)req_d3dkmt_mutex_acquire,
+     (req_handler)req_d3dkmt_mutex_release,
+     (req_handler)req_alpc_create_port,
++    (req_handler)req_dcomp_create_shared_visual,
++    (req_handler)req_dcomp_set_shared_visual_info,
++    (req_handler)req_dcomp_get_shared_visual_info,
+ };
+ 
+ C_ASSERT( sizeof(abstime_t) == 8 );
+@@ -2392,3 +2398,13 @@
+ C_ASSERT( sizeof(struct alpc_create_port_request) == 24 );
+ C_ASSERT( offsetof(struct alpc_create_port_reply, handle) == 8 );
+ C_ASSERT( sizeof(struct alpc_create_port_reply) == 16 );
++C_ASSERT( sizeof(struct dcomp_create_shared_visual_request) == 16 );
++C_ASSERT( offsetof(struct dcomp_create_shared_visual_reply, handle) == 8 );
++C_ASSERT( sizeof(struct dcomp_create_shared_visual_reply) == 16 );
++C_ASSERT( offsetof(struct dcomp_set_shared_visual_info_request, handle) == 12 );
++C_ASSERT( offsetof(struct dcomp_set_shared_visual_info_request, target_root) == 16 );
++C_ASSERT( sizeof(struct dcomp_set_shared_visual_info_request) == 24 );
++C_ASSERT( offsetof(struct dcomp_get_shared_visual_info_request, handle) == 12 );
++C_ASSERT( sizeof(struct dcomp_get_shared_visual_info_request) == 16 );
++C_ASSERT( offsetof(struct dcomp_get_shared_visual_info_reply, target_root) == 8 );
++C_ASSERT( sizeof(struct dcomp_get_shared_visual_info_reply) == 16 );
+--- a/server/request_trace.h
++++ b/server/request_trace.h
+@@ -3534,6 +3534,31 @@
+ static void dump_alpc_create_port_reply( const struct alpc_create_port_reply *req )
+ {
+     fprintf( stderr, " handle=%04x", req->handle );
++}
++
++static void dump_dcomp_create_shared_visual_request( const struct dcomp_create_shared_visual_request *req )
++{
++}
++
++static void dump_dcomp_create_shared_visual_reply( const struct dcomp_create_shared_visual_reply *req )
++{
++    fprintf( stderr, " handle=%04x", req->handle );
++}
++
++static void dump_dcomp_set_shared_visual_info_request( const struct dcomp_set_shared_visual_info_request *req )
++{
++    fprintf( stderr, " handle=%04x", req->handle );
++    dump_uint64( ", target_root=", &req->target_root );
++}
++
++static void dump_dcomp_get_shared_visual_info_request( const struct dcomp_get_shared_visual_info_request *req )
++{
++    fprintf( stderr, " handle=%04x", req->handle );
++}
++
++static void dump_dcomp_get_shared_visual_info_reply( const struct dcomp_get_shared_visual_info_reply *req )
++{
++    dump_uint64( " target_root=", &req->target_root );
+ }
+ 
+ typedef void (*dump_func)( const void *req );
+@@ -3848,6 +3873,9 @@
+     (dump_func)dump_d3dkmt_mutex_acquire_request,
+     (dump_func)dump_d3dkmt_mutex_release_request,
+     (dump_func)dump_alpc_create_port_request,
++    (dump_func)dump_dcomp_create_shared_visual_request,
++    (dump_func)dump_dcomp_set_shared_visual_info_request,
++    (dump_func)dump_dcomp_get_shared_visual_info_request,
+ };
+ 
+ static const dump_func reply_dumpers[REQ_NB_REQUESTS] =
+@@ -4160,6 +4188,9 @@
+     (dump_func)dump_d3dkmt_mutex_acquire_reply,
+     NULL,
+     (dump_func)dump_alpc_create_port_reply,
++    (dump_func)dump_dcomp_create_shared_visual_reply,
++    NULL,
++    (dump_func)dump_dcomp_get_shared_visual_info_reply,
+ };
+ 
+ static const char * const req_names[REQ_NB_REQUESTS] =
+@@ -4472,6 +4503,9 @@
+     "d3dkmt_mutex_acquire",
+     "d3dkmt_mutex_release",
+     "alpc_create_port",
++    "dcomp_create_shared_visual",
++    "dcomp_set_shared_visual_info",
++    "dcomp_get_shared_visual_info",
+ };
+ 
+ static const struct
+@@ -4555,6 +4589,7 @@
+     { "INVALID_USER_BUFFER",         STATUS_INVALID_USER_BUFFER },
+     { "IO_REPARSE_DATA_INVALID",     STATUS_IO_REPARSE_DATA_INVALID },
+     { "IO_REPARSE_TAG_INVALID",      STATUS_IO_REPARSE_TAG_INVALID },
++    { "IO_REPARSE_TAG_NOT_HANDLED",  STATUS_IO_REPARSE_TAG_NOT_HANDLED },
+     { "IO_TIMEOUT",                  STATUS_IO_TIMEOUT },
+     { "KERNEL_APC",                  STATUS_KERNEL_APC },
+     { "KEY_DELETED",                 STATUS_KEY_DELETED },
+--- a/server/sock.c
++++ b/server/sock.c
+@@ -95,6 +95,8 @@
+ # endif
+ #endif
+ 
++#include <sys/un.h>
++
+ #include "ntstatus.h"
+ #include "windef.h"
+ #include "winternl.h"
+@@ -105,6 +107,7 @@
+ #include "tcpmib.h"
+ #include "wsipx.h"
+ #include "af_irda.h"
++#include "afunix.h"
+ #include "bthsdpdef.h"
+ #include "bluetoothapis.h"
+ #include "bthdef.h"
+@@ -146,6 +149,7 @@
+     struct WS_sockaddr_in6 in6;
+     struct WS_sockaddr_ipx ipx;
+     SOCKADDR_IRDA irda;
++    struct WS_sockaddr_un un;
+ };
+ 
+ union unix_sockaddr
+@@ -162,6 +166,7 @@
+ #ifdef HAS_BLUETOOTH
+     struct sockaddr_rc rfcomm;
+ #endif
++    struct sockaddr_un un;
+ };
+ 
+ static struct list poll_list = LIST_INIT( poll_list );
+@@ -724,6 +729,9 @@
+             uaddr->irda.sir_family = AF_IRDA;
+             return sizeof(uaddr->irda);
+ #endif
++        case WS_AF_UNIX:
++            uaddr->un.sun_family = AF_UNIX;
++            return sizeof(uaddr->un);
+         default:
+             return 0;
+     }
+@@ -1827,6 +1835,7 @@
+ #ifdef AF_BLUETOOTH
+         case WS_AF_BTH: return AF_BLUETOOTH;
+ #endif
++        case WS_AF_UNIX: return AF_UNIX;
+         case WS_AF_UNSPEC: return AF_UNSPEC;
+         default: return -1;
+     }
+@@ -1927,6 +1936,12 @@
+         return -1;
+     }
+ 
++    if (unix_family == AF_UNIX && unix_type == SOCK_DGRAM)
++    {
++        set_win32_error(WSAEAFNOSUPPORT);
++        return -1;
++    }
++
+     sockfd = socket( unix_family, unix_type, unix_protocol );
+ #ifdef linux
+     if (sockfd == -1 && errno == EPERM && unix_type == SOCK_RAW
+@@ -2019,6 +2034,18 @@
+     sock->proto  = protocol;
+     sock->type   = type;
+     sock->family = family;
++
++    /* Windows reports AF_UNIX with an empty path for an unbound socket, so the
++     * family has to be present before bind() ever runs. */
++    if (family == WS_AF_UNIX)
++    {
++        memset( &sock->addr.un, 0, sizeof(sock->addr.un) );
++        sock->addr.un.sun_family = WS_AF_UNIX;
++        sock->addr_len = sizeof(sock->addr.un);
++        memset( &sock->peer_addr.un, 0, sizeof(sock->peer_addr.un) );
++        sock->peer_addr.un.sun_family = WS_AF_UNIX;
++        sock->peer_addr_len = sizeof(sock->peer_addr.un);
++    }
+ 
+     if (is_tcp_socket( sock ))
+     {
+@@ -2120,11 +2147,32 @@
+         unix_len = sizeof(unix_addr);
+         if (!getsockname( acceptfd, &unix_addr.addr, &unix_len ))
+         {
+-            acceptsock->addr_len = sockaddr_from_unix( &unix_addr, &acceptsock->addr.addr, sizeof(acceptsock->addr) );
++            if (sock->family == WS_AF_UNIX)
++            {
++                acceptsock->addr_len = sock->addr_len;
++                acceptsock->addr.un = sock->addr.un;
++            }
++            else
++            {
++                acceptsock->addr_len = sockaddr_from_unix( &unix_addr,
++                                                           &acceptsock->addr.addr,
++                                                           sizeof(acceptsock->addr) );
++            }
++
+             if (!getpeername( acceptfd, &unix_addr.addr, &unix_len ))
+-                acceptsock->peer_addr_len = sockaddr_from_unix( &unix_addr,
+-                                                                &acceptsock->peer_addr.addr,
+-                                                                sizeof(acceptsock->peer_addr) );
++            {
++                if (sock->family == WS_AF_UNIX)
++                {
++                    acceptsock->peer_addr_len = sizeof( sock->peer_addr.un );
++                    acceptsock->peer_addr.un = sock->peer_addr.un;
++                }
++                else
++                {
++                    acceptsock->peer_addr_len = sockaddr_from_unix( &unix_addr,
++                                                                    &acceptsock->peer_addr.addr,
++                                                                    sizeof(acceptsock->peer_addr) );
++                }
++            }
+         }
+     }
+ 
+@@ -2184,11 +2232,31 @@
+     unix_len = sizeof(unix_addr);
+     if (!getsockname( get_unix_fd( newfd ), &unix_addr.addr, &unix_len ))
+     {
+-        acceptsock->addr_len = sockaddr_from_unix( &unix_addr, &acceptsock->addr.addr, sizeof(acceptsock->addr) );
++        if (sock->family == WS_AF_UNIX)
++        {
++            acceptsock->addr_len = sock->addr_len;
++            acceptsock->addr.un = sock->addr.un;
++        }
++        else
++        {
++            acceptsock->addr_len = sockaddr_from_unix( &unix_addr,
++                                                       &acceptsock->addr.addr,
++                                                       sizeof(acceptsock->addr) );
++        }
+         if (!getpeername( get_unix_fd( newfd ), &unix_addr.addr, &unix_len ))
+-            acceptsock->peer_addr_len = sockaddr_from_unix( &unix_addr,
+-                                                            &acceptsock->peer_addr.addr,
+-                                                            sizeof(acceptsock->peer_addr) );
++        {
++            if (sock->family == WS_AF_UNIX)
++            {
++                acceptsock->peer_addr_len = sizeof( sock->peer_addr.un );
++                acceptsock->peer_addr.un = sock->peer_addr.un;
++            }
++            else
++            {
++                acceptsock->peer_addr_len = sockaddr_from_unix( &unix_addr,
++                                                                &acceptsock->peer_addr.addr,
++                                                                sizeof(acceptsock->peer_addr) );
++            }
++        }
+     }
+ 
+     clear_error();
+@@ -2646,8 +2714,13 @@
+ 
+         if (listen( unix_fd, params->backlog ) < 0)
+         {
+-            set_error( sock_get_ntstatus( errno ) );
+-            return;
++            /* Due to the way we handle the Windows AF_UNIX bind edge case, we also need to
++             * ignore listen's error. */
++            if (!(errno == EINVAL && sock->family == WS_AF_UNIX && !*sock->addr.un.sun_path))
++            {
++                set_error( sock_get_ntstatus( errno ) );
++                return;
++            }
+         }
+ 
+         sock->state = SOCK_LISTENING;
+@@ -2717,7 +2790,62 @@
+                 break;
+         }
+ 
+-        unix_len = sockaddr_to_unix( addr, params->addr_len, &unix_addr );
++        if (sock->family == WS_AF_UNIX)
++        {
++            if (*addr->sa_data)
++            {
++                int unix_path_len = get_req_data_size() - sizeof(*params) - params->addr_len;
++                char *unix_path;
++                char *base_name;
++
++                if (!(unix_path = mem_alloc( unix_path_len + 1 )))
++                    return;
++
++                memcpy( unix_path, (char *)(params + 1) + params->addr_len, unix_path_len );
++                unix_path[unix_path_len] = '\0';
++
++                base_name = strrchr(unix_path, '/');
++                if (base_name)
++                {
++                    if (base_name != unix_path)
++                        (++base_name)[-1] = '\0';
++                }
++                else
++                    base_name = unix_path;
++
++                if (strlen( base_name ) >= sizeof(unix_addr.un.sun_path))
++                {
++                    free( unix_path );
++                    set_win32_error( WSAEINVAL );
++                    return;
++                }
++
++                if (chdir( unix_path ) == -1)
++                {
++                    set_error( sock_get_ntstatus( errno ) );
++                    free( unix_path );
++                    return;
++                }
++
++                send_len -= unix_path_len;
++                unix_len = sizeof(unix_addr.un);
++                memset( &unix_addr.un, 0, sizeof(unix_addr.un) );
++                unix_addr.un.sun_family = AF_UNIX;
++                memcpy( unix_addr.un.sun_path, base_name, strlen( base_name ) );
++                free( unix_path );
++            }
++            else
++            {
++                /* Contrary to documentation, Windows does not currently support abstract Unix
++                 * sockets. connect() throws WSAEINVAL if sun_family is AF_UNIX and sun_path
++                 * begins with '\0', even though bind() will succeed. */
++                set_win32_error( WSAEINVAL );
++                return;
++            }
++        }
++        else
++            unix_len = sockaddr_to_unix( addr, params->addr_len, &unix_addr );
++
+         if (!unix_len)
+         {
+             set_error( STATUS_INVALID_ADDRESS );
+@@ -2763,6 +2891,9 @@
+             }
+         }
+ 
++        if (sock->family == WS_AF_UNIX && *addr->sa_data)
++            fchdir(server_dir_fd);
++
+         if (ret < 0 && errno != EINPROGRESS)
+         {
+             set_error( sock_get_ntstatus( errno ) );
+@@ -2773,10 +2904,17 @@
+         allow_fd_caching( sock->fd );
+ 
+         unix_len = sizeof(unix_addr);
+-        getsockname( unix_fd, &unix_addr.addr, &unix_len );
+-        sock->addr_len = sockaddr_from_unix( &unix_addr, &sock->addr.addr, sizeof(sock->addr) );
+-        sock->peer_addr_len = sockaddr_from_unix( &peer_addr, &sock->peer_addr.addr, sizeof(sock->peer_addr));
+-
++        if (sock->family == WS_AF_UNIX)
++        {
++            sock->peer_addr.un = *(struct WS_sockaddr_un *)addr;
++            sock->peer_addr_len = sizeof(struct WS_sockaddr_un);
++        }
++        else
++        {
++            getsockname( unix_fd, &unix_addr.addr, &unix_len );
++            sock->addr_len = sockaddr_from_unix( &unix_addr, &sock->addr.addr, sizeof(sock->addr) );
++            sock->peer_addr_len = sockaddr_from_unix( &peer_addr, &sock->peer_addr.addr, sizeof(sock->peer_addr));
++        }
+         sock->bound = 1;
+ 
+         if (!ret)
+@@ -3018,6 +3156,7 @@
+         data_size_t in_size;
+         socklen_t unix_len;
+         int v6only = 1;
++        int unix_path_len = 0;
+ 
+         /* the ioctl is METHOD_NEITHER, so ntdll gives us the output buffer as
+          * input */
+@@ -3027,8 +3166,10 @@
+             return;
+         }
+         in_size = get_req_data_size() - get_reply_max_size();
++        if (params->addr.sa_family == WS_AF_UNIX)
++            unix_path_len = in_size - sizeof(params->unknown) - sizeof(struct WS_sockaddr_un);
+         if (in_size < offsetof(struct afd_bind_params, addr.sa_data)
+-                || get_reply_max_size() < in_size - sizeof(int))
++                || get_reply_max_size() < in_size - sizeof(int) - unix_path_len)
+         {
+             set_error( STATUS_INVALID_PARAMETER );
+             return;
+@@ -3040,7 +3181,54 @@
+             return;
+         }
+ 
+-        unix_len = sockaddr_to_unix( &params->addr, in_size - sizeof(int), &unix_addr );
++        if (sock->family == WS_AF_UNIX)
++        {
++            if (*params->addr.sa_data)
++            {
++                char *unix_path;
++                char *base_name;
++
++                if (!(unix_path = mem_alloc( unix_path_len + 1 )))
++                    return;
++
++                memcpy( unix_path, (char *)(&params->addr) + sizeof(struct WS_sockaddr_un), unix_path_len );
++                unix_path[unix_path_len] = '\0';
++
++                base_name = strrchr(unix_path, '/');
++                if (base_name)
++                {
++                    if (base_name != unix_path)
++                        (++base_name)[-1] = '\0';
++                }
++                else
++                    base_name = unix_path;
++
++                if (strlen( base_name ) >= sizeof(unix_addr.un.sun_path))
++                {
++                    free( unix_path );
++                    set_win32_error( WSAEINVAL );
++                    return;
++                }
++
++                if (chdir( unix_path ) == -1)
++                {
++                    free( unix_path );
++                    set_error( sock_get_ntstatus( errno ) );
++                    return;
++                }
++
++                memset( &unix_addr.un, 0, sizeof(unix_addr.un) );
++                memcpy( unix_addr.un.sun_path, base_name, strlen( base_name ) );
++                free( unix_path );
++            }
++            else
++                memset(unix_addr.un.sun_path, 0, sizeof(unix_addr.un.sun_path));
++            unix_addr.un.sun_family = AF_UNIX;
++            unix_len = sizeof(unix_addr.un);
++        }
++        else
++            unix_len = sockaddr_to_unix( &params->addr, in_size - sizeof(int), &unix_addr );
++
+         if (!unix_len)
+         {
+             set_error( STATUS_INVALID_ADDRESS );
+@@ -3118,8 +3306,16 @@
+             if (errno == EADDRINUSE && sock->reuseaddr)
+                 errno = EACCES;
+ 
+-            set_error( sock_get_ntstatus( errno ) );
+-            return;
++            /* Windows' AF_UNIX implementation has an edge case allowing for a socket to bind to
++             * an empty path. Linux doesn't, so it throws EINVAL. We check for this situation
++             * here and avoid early-exiting if it's the case. */
++            if (!(errno == EINVAL && sock->family == WS_AF_UNIX && !*params->addr.sa_data))
++            {
++                set_error( sock_get_ntstatus( errno ) );
++                if (sock->family == WS_AF_UNIX && *params->addr.sa_data)
++                    fchdir(server_dir_fd);
++                return;
++            }
+         }
+ 
+         sock->bound = 1;
+@@ -3131,13 +3327,23 @@
+              * actual unix address */
+             if (bind_addr.addr.sa_family == AF_INET)
+                 bind_addr.in.sin_addr = unix_addr.in.sin_addr;
+-            sock->addr_len = sockaddr_from_unix( &bind_addr, &sock->addr.addr, sizeof(sock->addr) );
++            if (bind_addr.addr.sa_family == AF_UNIX)
++            {
++                sock->addr.un.sun_family = WS_AF_UNIX;
++                memcpy(sock->addr.un.sun_path, params->addr.sa_data, sizeof(sock->addr.un.sun_path));
++                sock->addr_len = sizeof(sock->addr.un);
++            }
++            else
++                sock->addr_len = sockaddr_from_unix( &bind_addr, &sock->addr.addr, sizeof(sock->addr) );
+         }
+ 
+         update_addr_usage( sock, &bind_addr, v6only );
+ 
+         if (get_reply_max_size() >= sock->addr_len)
+             set_reply_data( &sock->addr, sock->addr_len );
++
++        if (sock->family == WS_AF_UNIX && *params->addr.sa_data)
++            fchdir(server_dir_fd);
+         return;
+     }
+ 
+@@ -3154,7 +3360,15 @@
+             return;
+         }
+ 
+-        set_reply_data( &sock->addr, sock->addr_len );
++        if (sock->family == WS_AF_UNIX)
++        {
++            if (*sock->addr.un.sun_path)
++                set_reply_data( &sock->addr, sizeof(sock->addr.un.sun_family) + strlen(sock->addr.un.sun_path) + 1 );
++            else
++                set_reply_data( &sock->addr, sizeof(sock->addr.un) );
++        }
++        else
++            set_reply_data( &sock->addr, sock->addr_len );
+         return;
+ 
+     case IOCTL_AFD_WINE_GETPEERNAME:
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -377,6 +377,7 @@
+     thread->token           = NULL;
+     thread->desc            = NULL;
+     thread->desc_len        = 0;
++    thread->exit_poll       = NULL;
+ 
+     thread->creation_time = current_time;
+     thread->exit_time     = 0;
+@@ -607,6 +608,7 @@
+     list_remove( &thread->entry );
+     cleanup_thread( thread );
+     release_object( thread->process );
++    if (thread->exit_poll) remove_timeout_user( thread->exit_poll );
+     if (thread->id) free_ptid( thread->id );
+     if (thread->token) release_object( thread->token );
+     if (thread->alert_sync) release_object( thread->alert_sync );
+@@ -1564,6 +1566,26 @@
+     return -1;
+ }
+ 
++static void check_terminated( void *arg )
++{
++    struct thread *thread = arg;
++    assert( thread->obj.ops == &thread_ops );
++    assert( thread->state == TERMINATED );
++
++    /* don't wake up until the thread is really dead, to avoid race conditions */
++    if (thread->unix_tid != -1 && !kill( thread->unix_tid, 0 ))
++    {
++        thread->exit_poll = add_timeout_user( -TICKS_PER_SEC / 1000, check_terminated, thread );
++        return;
++    }
++
++    /* grab reference since object can be destroyed while trying to wake up */
++    grab_object( &thread->obj );
++    thread->exit_poll = NULL;
++    signal_sync( thread->sync );
++    release_object( &thread->obj );
++}
++
+ /* kill a thread on the spot */
+ void kill_thread( struct thread *thread, int violent_death )
+ {
+@@ -1583,8 +1605,13 @@
+     }
+     kill_console_processes( thread, 0 );
+     abandon_mutexes( thread );
+-    signal_sync( thread->sync );
+-    if (violent_death) send_thread_signal( thread, SIGQUIT );
++    if (violent_death)
++    {
++        send_thread_signal( thread, SIGQUIT );
++        check_terminated( thread );
++    }
++    else
++        signal_sync( thread->sync );
+     cleanup_thread( thread );
+     remove_process_thread( thread->process, thread );
+     release_object( thread );
+--- a/server/thread.h
++++ b/server/thread.h
+@@ -100,6 +100,7 @@
+     data_size_t            desc_len;      /* thread description length in bytes */
+     WCHAR                 *desc;          /* thread description string */
+     struct completion_wait *completion_wait; /* completion port wait object the thread is associated with */
++    struct timeout_user   *exit_poll;     /* poll if the thread/process has exited already */
+ };
+ 
+ extern struct thread *current;
+--- a/include/wine/server_protocol.h
++++ b/include/wine/server_protocol.h
+@@ -6240,6 +6240,46 @@
+     struct reply_header __header;
+     obj_handle_t        handle;
+     char __pad_12[4];
++};
++
++
++
++struct dcomp_create_shared_visual_request
++{
++    struct request_header __header;
++    char __pad_12[4];
++};
++struct dcomp_create_shared_visual_reply
++{
++    struct reply_header __header;
++    obj_handle_t  handle;
++    char __pad_12[4];
++};
++
++
++
++struct dcomp_set_shared_visual_info_request
++{
++    struct request_header __header;
++    obj_handle_t  handle;
++    client_ptr_t  target_root;
++};
++struct dcomp_set_shared_visual_info_reply
++{
++    struct reply_header __header;
++};
++
++
++
++struct dcomp_get_shared_visual_info_request
++{
++    struct request_header __header;
++    obj_handle_t  handle;
++};
++struct dcomp_get_shared_visual_info_reply
++{
++    struct reply_header __header;
++    client_ptr_t  target_root;
+ };
+ 
+ 
+@@ -6553,6 +6593,9 @@
+     REQ_d3dkmt_mutex_acquire,
+     REQ_d3dkmt_mutex_release,
+     REQ_alpc_create_port,
++    REQ_dcomp_create_shared_visual,
++    REQ_dcomp_set_shared_visual_info,
++    REQ_dcomp_get_shared_visual_info,
+     REQ_NB_REQUESTS
+ };
+ 
+@@ -6868,6 +6911,9 @@
+     struct d3dkmt_mutex_acquire_request d3dkmt_mutex_acquire_request;
+     struct d3dkmt_mutex_release_request d3dkmt_mutex_release_request;
+     struct alpc_create_port_request alpc_create_port_request;
++    struct dcomp_create_shared_visual_request dcomp_create_shared_visual_request;
++    struct dcomp_set_shared_visual_info_request dcomp_set_shared_visual_info_request;
++    struct dcomp_get_shared_visual_info_request dcomp_get_shared_visual_info_request;
+ };
+ union generic_reply
+ {
+@@ -7181,8 +7227,11 @@
+     struct d3dkmt_mutex_acquire_reply d3dkmt_mutex_acquire_reply;
+     struct d3dkmt_mutex_release_reply d3dkmt_mutex_release_reply;
+     struct alpc_create_port_reply alpc_create_port_reply;
+-};
+-
+-#define SERVER_PROTOCOL_VERSION 961
++    struct dcomp_create_shared_visual_reply dcomp_create_shared_visual_reply;
++    struct dcomp_set_shared_visual_info_reply dcomp_set_shared_visual_info_reply;
++    struct dcomp_get_shared_visual_info_reply dcomp_get_shared_visual_info_reply;
++};
++
++#define SERVER_PROTOCOL_VERSION 962
+ 
+ #endif /* __WINE_WINE_SERVER_PROTOCOL_H */

@@ -12,6 +12,12 @@ patches/0000-staging-winemac-no-flicker.patch
 Original Wine Staging patch by Ken Thomases (CodeWeavers), retained with its
 original author and commit metadata. GNU LGPL 2.1 or later.
 
+patches/0008-d3dx9-staging-sync.patch
+The part of Wine Staging's d3dx9 patches that apply to dlls/d3dx9_36 and dlls/d3dx9_43,
+extracted from the 11.16 patchset so the d3dx9_43.dll built here matches the stock
+wine-staging bundle. Copyright its authors (see the Wine Staging history). GNU LGPL 2.1
+or later.
+
 Screenshots of LimeSDR-USB
 The hardware design is by Lime Microsystems / the Myriad-RF project and is
 licensed under Creative Commons Attribution 3.0 Unported (CC BY 3.0).
@@ -23,3 +29,26 @@ the hardware design is not modified or redistributed by this kit.
 Altium Designer remains proprietary software. This repository and its releases
 contain no Altium installer, program binaries, license files, or extracted icon.
 Altium, Wine, CodeWeavers and Lime Microsystems do not endorse this project.
+
+patches/0011-kernelbase-staging-sync.patch
+Kernelbase changes extracted from Wine Staging 11.16 to retain the stock bundle's
+behavior. Original author and commit metadata is retained. GNU LGPL 2.1 or later.
+
+patches/0014-server-staging-sync.patch
+Enabled server changes and dependencies extracted from Wine Staging 11.16,
+including generated protocol headers. Original patch author/commit references
+are listed in the patch; complete notices are in the upstream patchset.
+GNU LGPL 2.1 or later.
+
+patches/0016-d3d9-staging-sync.patch
+Wine Staging SWVP constant-limit changes by Paul Gofman, adapted to the Wine
+11.16 stateblock API. Original author metadata is retained. GNU LGPL 2.1 or later.
+
+patches/0018-wined3d-staging-sync.patch
+Enabled wined3d changes from Wine Staging 11.16. Original author and commit
+metadata is retained. GNU LGPL 2.1 or later.
+
+patches/0023-winemac-schematic-performance.patch
+Original parallel/native copy, pan compositing and input fixes by lazy-jubei.
+The leading dib_info layout derives from Wine's dibdrv.h, Copyright 2011 Huw Davies.
+GNU LGPL 2.1 or later.

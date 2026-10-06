@@ -1,0 +1,312 @@
+Kernelbase subset of Wine Staging 11.16, commit f1936f02ba06b5012f89f75901944e8c2d26951c.
+Retains the stock bundle's kernelbase behavior when rebuilding the pipe fix.
+Original author metadata follows; unrelated modules/tests are omitted.
+
+From fe242e3483f040fdffd2ff7aa9774f7212149f56 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Michael=20M=C3=BCller?= <michael@fds-team.de>
+Date: Thu, 26 Feb 2015 06:41:26 +0100
+Subject: [PATCH] kernelbase: Add support for progress callback in CopyFileEx.
+
+
+diff --git a/dlls/kernelbase/file.c b/dlls/kernelbase/file.c
+index 7806ad2ec1f..e5adc0d4e2c 100644
+--- a/dlls/kernelbase/file.c
++++ b/dlls/kernelbase/file.c
+@@ -490,23 +490,29 @@ BOOL WINAPI DECLSPEC_HOTPATCH AreFileApisANSI(void)
+ /******************************************************************************
+  *  copy_file
+  */
+-static BOOL copy_file( const WCHAR *source, const WCHAR *dest, COPYFILE2_EXTENDED_PARAMETERS *params )
++static BOOL copy_file( const WCHAR *source, const WCHAR *dest, COPYFILE2_EXTENDED_PARAMETERS *params, LPPROGRESS_ROUTINE progress )
+ {
+     DWORD flags = params ? params->dwCopyFlags : 0;
+     BOOL *cancel_ptr = params ? params->pfCancel : NULL;
+-    PCOPYFILE2_PROGRESS_ROUTINE progress = params ? params->pProgressRoutine : NULL;
++    void *param = params ? params->pvCallbackContext : NULL;
++    PCOPYFILE2_PROGRESS_ROUTINE progress2 = params ? params->pProgressRoutine : NULL;
+ 
+     static const int buffer_size = 65536;
+     HANDLE h1, h2;
+-    FILE_BASIC_INFORMATION info;
++    FILE_NETWORK_OPEN_INFORMATION info;
++    FILE_BASIC_INFORMATION basic_info;
+     IO_STATUS_BLOCK io;
+     DWORD count;
+     BOOL ret = FALSE;
+     char *buffer;
++    LARGE_INTEGER size;
++    LARGE_INTEGER transferred;
++    DWORD cbret;
++    DWORD source_access = GENERIC_READ;
+ 
+     if (cancel_ptr)
+         FIXME("pfCancel is not supported\n");
+-    if (progress)
++    if (progress2)
+         FIXME("PCOPYFILE2_PROGRESS_ROUTINE is not supported\n");
+ 
+     if (!source || !dest)
+@@ -529,7 +535,10 @@ static BOOL copy_file( const WCHAR *source, const WCHAR *dest, COPYFILE2_EXTENDE
+     if (flags & COPY_FILE_OPEN_SOURCE_FOR_WRITE)
+         FIXME("COPY_FILE_OPEN_SOURCE_FOR_WRITE is not supported\n");
+ 
+-    if ((h1 = CreateFileW( source, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
++    if (flags & COPY_FILE_OPEN_SOURCE_FOR_WRITE)
++        source_access |= GENERIC_WRITE;
++
++    if ((h1 = CreateFileW( source, source_access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                            NULL, OPEN_EXISTING, 0, 0 )) == INVALID_HANDLE_VALUE)
+     {
+         WARN("Unable to open source %s\n", debugstr_w(source));
+@@ -537,7 +546,7 @@ static BOOL copy_file( const WCHAR *source, const WCHAR *dest, COPYFILE2_EXTENDE
+         return FALSE;
+     }
+ 
+-    if (!set_ntstatus( NtQueryInformationFile( h1, &io, &info, sizeof(info), FileBasicInformation )))
++    if (!set_ntstatus( NtQueryInformationFile( h1, &io, &info, sizeof(info), FileNetworkOpenInformation )))
+     {
+         WARN("GetFileInformationByHandle returned error for %s\n", debugstr_w(source));
+         HeapFree( GetProcessHeap(), 0, buffer );
+@@ -563,7 +572,11 @@ static BOOL copy_file( const WCHAR *source, const WCHAR *dest, COPYFILE2_EXTENDE
+         }
+     }
+ 
+-    if ((h2 = CreateFileW( dest, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
++    if ((h2 = CreateFileW( dest, GENERIC_WRITE | DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
++                           (flags & COPY_FILE_FAIL_IF_EXISTS) ? CREATE_NEW : CREATE_ALWAYS,
++                           info.FileAttributes, h1 )) == INVALID_HANDLE_VALUE &&
++        /* retry without DELETE if we got a sharing violation */
++        (h2 = CreateFileW( dest, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                            (flags & COPY_FILE_FAIL_IF_EXISTS) ? CREATE_NEW : CREATE_ALWAYS,
+                            info.FileAttributes, h1 )) == INVALID_HANDLE_VALUE)
+     {
+@@ -573,6 +586,29 @@ static BOOL copy_file( const WCHAR *source, const WCHAR *dest, COPYFILE2_EXTENDE
+         return FALSE;
+     }
+ 
++    size = info.EndOfFile;
++    transferred.QuadPart = 0;
++
++    if (progress)
++    {
++        cbret = progress( size, transferred, size, transferred, 1,
++                          CALLBACK_STREAM_SWITCH, h1, h2, param );
++        if (cbret == PROGRESS_QUIET)
++            progress = NULL;
++        else if (cbret == PROGRESS_STOP)
++        {
++            SetLastError( ERROR_REQUEST_ABORTED );
++            goto done;
++        }
++        else if (cbret == PROGRESS_CANCEL)
++        {
++            BOOLEAN disp = TRUE;
++            SetFileInformationByHandle( h2, FileDispositionInfo, &disp, sizeof(disp) );
++            SetLastError( ERROR_REQUEST_ABORTED );
++            goto done;
++        }
++    }
++
+     while (ReadFile( h1, buffer, buffer_size, &count, NULL ) && count)
+     {
+         char *p = buffer;
+@@ -582,13 +618,38 @@ static BOOL copy_file( const WCHAR *source, const WCHAR *dest, COPYFILE2_EXTENDE
+             if (!WriteFile( h2, p, count, &res, NULL ) || !res) goto done;
+             p += res;
+             count -= res;
++
++            if (progress)
++            {
++                transferred.QuadPart += res;
++                cbret = progress( size, transferred, size, transferred, 1,
++                                  CALLBACK_CHUNK_FINISHED, h1, h2, param );
++                if (cbret == PROGRESS_QUIET)
++                    progress = NULL;
++                else if (cbret == PROGRESS_STOP)
++                {
++                    SetLastError( ERROR_REQUEST_ABORTED );
++                    goto done;
++                }
++                else if (cbret == PROGRESS_CANCEL)
++                {
++                    BOOLEAN disp = TRUE;
++                    SetFileInformationByHandle( h2, FileDispositionInfo, &disp, sizeof(disp) );
++                    SetLastError( ERROR_REQUEST_ABORTED );
++                    goto done;
++                }
++            }
+         }
+     }
+     ret = TRUE;
+ done:
+     /* Maintain the timestamp of source file to destination file and read-only attribute */
+-    info.FileAttributes &= FILE_ATTRIBUTE_READONLY;
+-    NtSetInformationFile( h2, &io, &info, sizeof(info), FileBasicInformation );
++    basic_info.CreationTime = info.CreationTime;
++    basic_info.LastAccessTime = info.LastAccessTime;
++    basic_info.LastWriteTime = info.LastWriteTime;
++    basic_info.ChangeTime = info.ChangeTime;
++    basic_info.FileAttributes = info.FileAttributes & FILE_ATTRIBUTE_READONLY;
++    NtSetInformationFile( h2, &io, &basic_info, sizeof(basic_info), FileBasicInformation );
+     HeapFree( GetProcessHeap(), 0, buffer );
+     CloseHandle( h1 );
+     CloseHandle( h2 );
+@@ -601,7 +662,7 @@ done:
+  */
+ HRESULT WINAPI CopyFile2( const WCHAR *source, const WCHAR *dest, COPYFILE2_EXTENDED_PARAMETERS *params )
+ {
+-    return copy_file(source, dest, params) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
++    return copy_file(source, dest, params, NULL) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+ }
+ 
+ 
+@@ -613,18 +674,16 @@ BOOL WINAPI CopyFileExW( const WCHAR *source, const WCHAR *dest, LPPROGRESS_ROUT
+ {
+     COPYFILE2_EXTENDED_PARAMETERS params;
+ 
+-    if (progress)
+-        FIXME("LPPROGRESS_ROUTINE is not supported\n");
+     if (cancel_ptr)
+         FIXME("cancel_ptr is not supported\n");
+ 
+     params.dwSize = sizeof(params);
+     params.dwCopyFlags = flags;
+     params.pProgressRoutine = NULL;
+-    params.pvCallbackContext = NULL;
++    params.pvCallbackContext = param;
+     params.pfCancel = NULL;
+ 
+-    return copy_file( source, dest, &params );
++    return copy_file( source, dest, &params, progress );
+ }
+ 
+ 
+
+From 4dfa7d8a06e20d9888398298e03c20fac89a9fdf Mon Sep 17 00:00:00 2001
+From: Sebastian Lackner <sebastian@fds-team.de>
+Date: Fri, 13 Jan 2017 01:59:13 +0100
+Subject: [PATCH] kernel32: Always start debugger on WinSta0.
+
+
+diff --git a/dlls/kernelbase/debug.c b/dlls/kernelbase/debug.c
+index cbefc0c8733..b37faaa0003 100644
+--- a/dlls/kernelbase/debug.c
++++ b/dlls/kernelbase/debug.c
+@@ -625,6 +625,7 @@ static BOOL start_debugger( EXCEPTION_POINTERS *epointers, HANDLE event )
+     TRACE( "Starting debugger %s\n", debugstr_w(cmdline) );
+     memset( &startup, 0, sizeof(startup) );
+     startup.cb = sizeof(startup);
++    startup.lpDesktop = (WCHAR*)L"WinSta0";
+     startup.dwFlags = STARTF_USESHOWWINDOW;
+     startup.wShowWindow = SW_SHOWNORMAL;
+     ret = CreateProcessW( NULL, cmdline, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT, env, NULL, &startup, &info );
+
+From ac9ba90ca9a1fca7bc01b45aa535ea515d42dd8d Mon Sep 17 00:00:00 2001
+From: Alistair Leslie-Hughes <leslie_alistair@hotmail.com>
+Date: Tue, 26 May 2026 10:07:24 +1000
+Subject: [PATCH] kernel32: Implement SetThreadpoolTimerEx
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=57980
+
+Due to the invalid name used in the bug report.
+
+Taking ownership until they attempt to upstream it?
+
+diff --git a/dlls/kernelbase/kernelbase.spec b/dlls/kernelbase/kernelbase.spec
+index 2c5906a29c2..e4ac04e34ba 100644
+--- a/dlls/kernelbase/kernelbase.spec
++++ b/dlls/kernelbase/kernelbase.spec
+@@ -1547,7 +1547,7 @@
+ @ stdcall SetThreadpoolThreadMaximum(ptr long) ntdll.TpSetPoolMaxThreads
+ @ stdcall SetThreadpoolThreadMinimum(ptr long) ntdll.TpSetPoolMinThreads
+ @ stdcall SetThreadpoolTimer(ptr ptr long long) ntdll.TpSetTimer
+-# @ stub SetThreadpoolTimerEx
++@ stdcall SetThreadpoolTimerEx(ptr ptr long long) ntdll.TpSetTimerEx
+ @ stdcall SetThreadpoolWait(ptr long ptr) ntdll.TpSetWait
+ # @ stub SetThreadpoolWaitEx
+ @ stdcall SetTimeZoneInformation(ptr)
+
+From 6e2509a34fb6f8f06438ee9908eb61320b73697f Mon Sep 17 00:00:00 2001
+From: Sebastian Lackner <sebastian@fds-team.de>
+Date: Sun, 28 Sep 2014 23:39:51 +0200
+Subject: [PATCH] ntdll: OutputDebugString should throw the exception a second
+ time, if a debugger is attached.
+
+
+diff --git a/dlls/kernelbase/debug.c b/dlls/kernelbase/debug.c
+index e1976777b7f..7294f99da7e 100644
+--- a/dlls/kernelbase/debug.c
++++ b/dlls/kernelbase/debug.c
+@@ -202,6 +202,23 @@ void WINAPI DECLSPEC_HOTPATCH OutputDebugStringA( LPCSTR str )
+     __ENDTRY
+     if (caught_by_dbg) return;
+ 
++    /* for some unknown reason Windows sends the exception a second time, if a
++     * debugger is attached, and the event wasn't handled in the first attempt */
++    if (NtCurrentTeb()->Peb->BeingDebugged)
++    {
++        __TRY
++        {
++            ULONG_PTR args[2];
++            args[0] = strlen(str) + 1;
++            args[1] = (ULONG_PTR)str;
++            RaiseException( DBG_PRINTEXCEPTION_C, 0, 2, args );
++        }
++        __EXCEPT(debug_exception_handler)
++        {
++        }
++        __ENDTRY
++    }
++
+     /* send string to a system-wide monitor */
+     if (!mutex_inited)
+     {
+
+From 321e3228c6c28256bfb209efdc372b61f9c8535f Mon Sep 17 00:00:00 2001
+From: Fabian Maurer <dark.shadow4@web.de>
+Date: Thu, 21 Dec 2023 20:09:23 +0100
+Subject: [PATCH] kernelbase: Correct return value in VirtualProtect for
+ PAGE_WRITECOPY
+
+
+diff --git a/dlls/kernelbase/memory.c b/dlls/kernelbase/memory.c
+index 4f4bba9a13b..de42395b33b 100644
+--- a/dlls/kernelbase/memory.c
++++ b/dlls/kernelbase/memory.c
+@@ -481,7 +481,9 @@ BOOL WINAPI DECLSPEC_HOTPATCH  VirtualLock( void *addr, SIZE_T size )
+  */
+ BOOL WINAPI DECLSPEC_HOTPATCH VirtualProtect( void *addr, SIZE_T size, DWORD new_prot, DWORD *old_prot )
+ {
+-    return VirtualProtectEx( GetCurrentProcess(), addr, size, new_prot, old_prot );
++    BOOL ret = VirtualProtectEx( GetCurrentProcess(), addr, size, new_prot, old_prot );
++    if (*old_prot == PAGE_WRITECOPY) *old_prot = PAGE_READWRITE;
++    return ret;
+ }
+ 
+ 
+
+From d455916aec7649a816deb36c303341a6c7732a97 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Aida=20Jonikien=C4=97?= <aidas957@gmail.com>
+Date: Fri, 26 Jul 2024 20:33:57 +0300
+Subject: [PATCH] kernelbase: Handle NULL old_prot parameter in
+ VirtualProtect().
+
+This fixes a segfault when launching any game with the EA Desktop application.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=56694
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=56711
+
+diff --git a/dlls/kernelbase/memory.c b/dlls/kernelbase/memory.c
+index 2b0e674bb9b..d1408cf4c0e 100644
+--- a/dlls/kernelbase/memory.c
++++ b/dlls/kernelbase/memory.c
+@@ -548,7 +548,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH  VirtualLock( void *addr, SIZE_T size )
+ BOOL WINAPI DECLSPEC_HOTPATCH VirtualProtect( void *addr, SIZE_T size, DWORD new_prot, DWORD *old_prot )
+ {
+     BOOL ret = VirtualProtectEx( GetCurrentProcess(), addr, size, new_prot, old_prot );
+-    if (*old_prot == PAGE_WRITECOPY) *old_prot = PAGE_READWRITE;
++    if (old_prot && *old_prot == PAGE_WRITECOPY) *old_prot = PAGE_READWRITE;
+     return ret;
+ }
+ 
+

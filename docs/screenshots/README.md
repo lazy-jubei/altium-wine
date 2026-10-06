@@ -25,3 +25,8 @@ For the 3D view, choose View → 3D Layout Mode, then
 View → 3D View Control → Isometric View.
 The screenshots demonstrate document loading and rendering; they do not
 constitute electrical, manufacturing or full Altium feature validation.
+
+
+`altium17-schematic.png` shows the same upstream FPGA sheet in Altium Designer
+17.1 on October 6, 2026. The Files panel is closed and the window caption is
+shortened for the capture; no schematic content is altered.

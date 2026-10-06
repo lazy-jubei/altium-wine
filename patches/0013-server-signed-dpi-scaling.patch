@@ -1,0 +1,25 @@
+From: Altium-on-Wine kit
+Subject: server: Preserve signed coordinates during DPI scaling
+
+Unsigned ratio arithmetic converted negative coordinates to large positive
+values even at equal DPI. A maximized window at x=-3 became x=22369618 when
+queried from another process at 192 DPI. Use signed 64-bit intermediates to
+match win32u rounding and avoid overflowing the coordinate product.
+
+--- a/server/user.h
++++ b/server/user.h
+@@ -234,9 +234,11 @@
+ 
+ static inline int scale_dpi( int val, struct ratio dpi_from, struct ratio dpi_to )
+ {
+-    unsigned int num = dpi_to.num * dpi_from.den, den = dpi_from.num * dpi_to.den;
+-    if (val >= 0) return (val * num + (den / 2)) / den;
+-    return (val * num - (den / 2)) / den;
++    int64_t num = (int64_t)dpi_to.num * dpi_from.den, den = (int64_t)dpi_from.num * dpi_to.den;
++    int64_t scaled = val * num;
++
++    if (scaled >= 0) return (scaled + (den / 2)) / den;
++    return (scaled - (den / 2)) / den;
+ }
+ 
+ static inline void scale_dpi_rect( struct rectangle *rect, struct ratio dpi_from, struct ratio dpi_to )

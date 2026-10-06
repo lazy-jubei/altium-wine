@@ -1,0 +1,498 @@
+# Enabled Wine Staging 11.16 wined3d baseline.
+# Commit f1936f02ba06b5012f89f75901944e8c2d26951c.
+# Retain upstream author and commit metadata.
+
+From 7df284bcf76788b078b4c43ce2de0c338b557e8a Mon Sep 17 00:00:00 2001
+From: Henri Verbeet <hverbeet@codeweavers.com>
+Date: Thu, 13 May 2021 17:58:12 +0200
+Subject: [PATCH] wined3d: Do not rotate WINED3D_SWAP_EFFECT_DISCARD
+ swapchains.
+
+RenderDoc/Qt creates swapchains with 2 buffers, a front buffer and a back
+buffer, and the DISCARD swap effect. It doesn't redraw the back buffer after a
+Present(), seemingly expecting that the back buffer will only be copied to the
+front buffer, and otherwise remain unmodified. Incidentally, CEF seems to
+behave in a similar way.
+---
+ dlls/wined3d/swapchain.c | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/wined3d/swapchain.c b/dlls/wined3d/swapchain.c
+index 6b2ad8d6954..c0721067bd1 100644
+--- a/dlls/wined3d/swapchain.c
++++ b/dlls/wined3d/swapchain.c
+@@ -523,8 +523,9 @@ static void wined3d_swapchain_gl_rotate(struct wined3d_swapchain *swapchain, str
+     unsigned int i;
+     static const DWORD supported_locations = WINED3D_LOCATION_TEXTURE_RGB | WINED3D_LOCATION_RB_MULTISAMPLE;
+ 
+-    if (swapchain->state.desc.backbuffer_count < 2)
+-        return;
++    if (swapchain->state.desc.swap_effect == WINED3D_SWAP_EFFECT_DISCARD
++            || swapchain->state.desc.backbuffer_count < 2)
++         return;
+ 
+     texture_prev = wined3d_texture_gl(swapchain->back_buffers[0]);
+ 
+@@ -1177,7 +1178,8 @@ static void wined3d_swapchain_vk_rotate(struct wined3d_swapchain *swapchain, str
+ 
+     static const DWORD supported_locations = WINED3D_LOCATION_TEXTURE_RGB | WINED3D_LOCATION_RB_MULTISAMPLE;
+ 
+-    if (swapchain->state.desc.backbuffer_count < 2)
++    if (swapchain->state.desc.swap_effect == WINED3D_SWAP_EFFECT_DISCARD
++            || swapchain->state.desc.backbuffer_count < 2)
+         return;
+ 
+     texture_prev = wined3d_texture_vk(swapchain->back_buffers[0]);
+-- 
+2.43.0
+
+
+From abbe2c0dc6db19cbf029c6d3c7fcf449503b9f99 Mon Sep 17 00:00:00 2001
+From: Henri Verbeet <hverbeet@codeweavers.com>
+Date: Fri, 28 Jun 2019 14:27:10 +1000
+Subject: [PATCH] wined3d: Dont set DDSCAPS_FLIP for gdi renderer
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=47419
+---
+ dlls/wined3d/adapter_gl.c | 1 +
+ dlls/wined3d/adapter_vk.c | 1 +
+ dlls/wined3d/directx.c    | 3 +--
+ 3 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/wined3d/adapter_gl.c b/dlls/wined3d/adapter_gl.c
+index fc6c507f2b6..aa36a504f52 100644
+--- a/dlls/wined3d/adapter_gl.c
++++ b/dlls/wined3d/adapter_gl.c
+@@ -4327,6 +4327,7 @@ static void adapter_gl_get_wined3d_caps(const struct wined3d_adapter *adapter, s
+     const struct wined3d_d3d_info *d3d_info = &adapter->d3d_info;
+ 
+     caps->ddraw_caps.dds_caps |= WINEDDSCAPS_BACKBUFFER
++            | WINEDDSCAPS_FLIP
+             | WINEDDSCAPS_COMPLEX
+             | WINEDDSCAPS_FRONTBUFFER
+             | WINEDDSCAPS_3DDEVICE
+diff --git a/dlls/wined3d/adapter_vk.c b/dlls/wined3d/adapter_vk.c
+index a27e8e41d88..da3acdc572e 100644
+--- a/dlls/wined3d/adapter_vk.c
++++ b/dlls/wined3d/adapter_vk.c
+@@ -504,6 +504,7 @@ static void adapter_vk_get_wined3d_caps(const struct wined3d_adapter *adapter, s
+     const struct wined3d_vk_info *vk_info = &adapter_vk->vk_info;
+ 
+     caps->ddraw_caps.dds_caps |= WINEDDSCAPS_BACKBUFFER
++            | WINEDDSCAPS_FLIP
+             | WINEDDSCAPS_COMPLEX
+             | WINEDDSCAPS_FRONTBUFFER
+             | WINEDDSCAPS_3DDEVICE
+diff --git a/dlls/wined3d/directx.c b/dlls/wined3d/directx.c
+index 079dc70ad5b..b8fa53b10ac 100644
+--- a/dlls/wined3d/directx.c
++++ b/dlls/wined3d/directx.c
+@@ -2692,8 +2692,7 @@ HRESULT CDECL wined3d_get_device_caps(const struct wined3d_adapter *adapter,
+     caps->ddraw_caps.ssb_color_key_caps = ckey_caps;
+     caps->ddraw_caps.ssb_fx_caps = fx_caps;
+ 
+-    caps->ddraw_caps.dds_caps = WINEDDSCAPS_FLIP
+-            | WINEDDSCAPS_OFFSCREENPLAIN
++    caps->ddraw_caps.dds_caps = WINEDDSCAPS_OFFSCREENPLAIN
+             | WINEDDSCAPS_PALETTE
+             | WINEDDSCAPS_PRIMARYSURFACE
+             | WINEDDSCAPS_TEXTURE
+-- 
+2.40.1
+
+
+From b4aeefdb8869f683f5085b8d64bc591855df138a Mon Sep 17 00:00:00 2001
+From: Paul Gofman <gofmanp@gmail.com>
+Date: Mon, 9 Sep 2019 18:48:43 +0300
+Subject: [PATCH] wined3d: Add a setting to workaround 0 * inf problem in
+ shader models 1-3.
+
+Adds 'multiply_special' config option which works around
+https://bugs.winehq.org/show_bug.cgi?id=34266.
+
+Signed-off-by: Paul Gofman <gofmanp@gmail.com>
+---
+ dlls/wined3d/glsl_shader.c     | 156 ++++++++++++++++++++++++++++-----
+ dlls/wined3d/wined3d_main.c    |   2 +
+ dlls/wined3d/wined3d_private.h |   1 +
+ 3 files changed, 135 insertions(+), 24 deletions(-)
+
+diff --git a/dlls/wined3d/glsl_shader.c b/dlls/wined3d/glsl_shader.c
+index df2ad761d8f..fccb45233db 100644
+--- a/dlls/wined3d/glsl_shader.c
++++ b/dlls/wined3d/glsl_shader.c
+@@ -2382,6 +2382,19 @@ static void shader_generate_glsl_declarations(const struct wined3d_context_gl *c
+     if (wined3d_settings.strict_shader_math)
+         shader_addline(buffer, "#pragma optionNV(fastmath off)\n");
+ 
++    if (wined3d_settings.multiply_special == 2 && version->major < 4)
++    {
++        shader_addline(buffer, "float dot1(float v1, float v2) {return abs(v1) == 0.0 || abs(v2) == 0.0 ? 0.0 : v1 * v2;}\n");
++        shader_addline(buffer, "float dot2(vec2 v1, vec2 v2) {return dot1(v1.x, v2.x) + dot1(v1.y, v2.y);}\n");
++        shader_addline(buffer, "float dot3(vec3 v1, vec3 v2) {return dot2(v1.xy, v2.xy) + dot1(v1.z, v2.z);}\n");
++        shader_addline(buffer, "float dot4(vec4 v1, vec4 v2) {return dot2(v1.xy, v2.xy) + dot2(v1.zw, v2.zw);}\n");
++
++        shader_addline(buffer, "float mul1(float v1, float v2) {return abs(v1) == 0.0 || abs(v2) == 0.0 ? 0.0 : v1 * v2;}\n");
++        shader_addline(buffer, "vec2 mul2(vec2 v1, vec2 v2) {return vec2(mul1(v1.x, v2.x), mul1(v1.y, v2.y));}\n");
++        shader_addline(buffer, "vec3 mul3(vec3 v1, vec3 v2) {return vec3(mul2(v1.xy, v2.xy), mul1(v1.z, v2.z));}\n");
++        shader_addline(buffer, "vec4 mul4(vec4 v1, vec4 v2) {return vec4(mul2(v1.xy, v2.xy), mul2(v1.zw, v2.zw));}\n");
++    }
++
+     prefix = shader_glsl_get_prefix(version->type);
+ 
+     /* Prototype the subroutines */
+@@ -3920,7 +3933,12 @@ static void shader_glsl_binop(const struct wined3d_shader_instruction *ins)
+     write_mask = shader_glsl_append_dst(buffer, ins);
+     shader_glsl_add_src_param(ins, &ins->src[0], write_mask, &src0_param);
+     shader_glsl_add_src_param(ins, &ins->src[1], write_mask, &src1_param);
+-    shader_addline(buffer, "%s %s %s);\n", src0_param.param_str, op, src1_param.param_str);
++    if (wined3d_settings.multiply_special == 2 && ins->ctx->reg_maps->shader_version.major < 4
++            && ins->handler_idx == WINED3DSIH_MUL)
++        shader_addline(buffer, "mul%d(%s, %s));\n", shader_glsl_get_write_mask_size(write_mask),
++                src0_param.param_str, src1_param.param_str);
++    else
++        shader_addline(buffer, "%s %s %s);\n", src0_param.param_str, op, src1_param.param_str);
+ }
+ 
+ static void shader_glsl_relop(const struct wined3d_shader_instruction *ins)
+@@ -4133,26 +4151,45 @@ static void shader_glsl_dot(const struct wined3d_shader_instruction *ins)
+     struct glsl_src_param src0_param;
+     struct glsl_src_param src1_param;
+     DWORD dst_write_mask, src_write_mask;
+-    unsigned int dst_size;
++    unsigned int dst_size, src_size;
+ 
+     dst_write_mask = shader_glsl_append_dst(buffer, ins);
+     dst_size = shader_glsl_get_write_mask_size(dst_write_mask);
+ 
+     /* dp4 works on vec4, dp3 on vec3, etc. */
+     if (ins->handler_idx == WINED3DSIH_DP4)
++    {
+         src_write_mask = WINED3DSP_WRITEMASK_ALL;
++        src_size = 4;
++    }
+     else if (ins->handler_idx == WINED3DSIH_DP3)
++    {
+         src_write_mask = WINED3DSP_WRITEMASK_0 | WINED3DSP_WRITEMASK_1 | WINED3DSP_WRITEMASK_2;
++        src_size = 3;
++    }
+     else
++    {
+         src_write_mask = WINED3DSP_WRITEMASK_0 | WINED3DSP_WRITEMASK_1;
+-
++        src_size = 2;
++    }
+     shader_glsl_add_src_param(ins, &ins->src[0], src_write_mask, &src0_param);
+     shader_glsl_add_src_param(ins, &ins->src[1], src_write_mask, &src1_param);
+ 
+-    if (dst_size > 1) {
+-        shader_addline(buffer, "vec%d(dot(%s, %s)));\n", dst_size, src0_param.param_str, src1_param.param_str);
+-    } else {
+-        shader_addline(buffer, "dot(%s, %s));\n", src0_param.param_str, src1_param.param_str);
++    if (dst_size > 1)
++    {
++        if (wined3d_settings.multiply_special == 2 && ins->ctx->reg_maps->shader_version.major < 4)
++            shader_addline(buffer, "vec%d(dot%d(%s, %s)));\n", dst_size, src_size,
++                    src0_param.param_str, src1_param.param_str);
++        else
++            shader_addline(buffer, "vec%d(dot(%s, %s)));\n", dst_size,
++                    src0_param.param_str, src1_param.param_str);
++    }
++    else
++    {
++        if (wined3d_settings.multiply_special == 2 && ins->ctx->reg_maps->shader_version.major < 4)
++            shader_addline(buffer, "dot%d(%s, %s));\n", src_size, src0_param.param_str, src1_param.param_str);
++        else
++            shader_addline(buffer, "dot(%s, %s));\n", src0_param.param_str, src1_param.param_str);
+     }
+ }
+ 
+@@ -4188,10 +4225,15 @@ static void shader_glsl_cut(const struct wined3d_shader_instruction *ins)
+ static void shader_glsl_pow(const struct wined3d_shader_instruction *ins)
+ {
+     struct wined3d_string_buffer *buffer = ins->ctx->buffer;
++    const struct shader_glsl_ctx_priv *priv = ins->ctx->backend_data;
++    static const float max_float = FLT_MAX;
+     struct glsl_src_param src0_param;
+     struct glsl_src_param src1_param;
+     DWORD dst_write_mask;
+     unsigned int dst_size;
++    BOOL guard_inf;
++
++    guard_inf = wined3d_settings.multiply_special == 1 && ins->ctx->reg_maps->shader_version.major < 4;
+ 
+     dst_write_mask = shader_glsl_append_dst(buffer, ins);
+     dst_size = shader_glsl_get_write_mask_size(dst_write_mask);
+@@ -4201,13 +4243,33 @@ static void shader_glsl_pow(const struct wined3d_shader_instruction *ins)
+ 
+     if (dst_size > 1)
+     {
+-        shader_addline(buffer, "vec%u(%s == 0.0 ? 1.0 : pow(abs(%s), %s)));\n",
+-                dst_size, src1_param.param_str, src0_param.param_str, src1_param.param_str);
++        if (guard_inf)
++        {
++            shader_addline(buffer, "vec%u(%s == 0.0 ? 1.0 : min(pow(abs(%s), %s), ",
++                    dst_size, src1_param.param_str, src0_param.param_str, src1_param.param_str);
++            shader_glsl_append_imm_vec(buffer, &max_float, 1, priv->gl_info);
++            shader_addline(buffer, ")));\n");
++        }
++        else
++        {
++            shader_addline(buffer, "vec%u(%s == 0.0 ? 1.0 : pow(abs(%s), %s)));\n",
++                    dst_size, src1_param.param_str, src0_param.param_str, src1_param.param_str);
++        }
+     }
+     else
+     {
+-        shader_addline(buffer, "%s == 0.0 ? 1.0 : pow(abs(%s), %s));\n",
+-                src1_param.param_str, src0_param.param_str, src1_param.param_str);
++        if (guard_inf)
++        {
++            shader_addline(buffer, "%s == 0.0 ? 1.0 : min(pow(abs(%s), %s), ",
++                    src1_param.param_str, src0_param.param_str, src1_param.param_str);
++            shader_glsl_append_imm_vec(buffer, &max_float, 1, priv->gl_info);
++            shader_addline(buffer, "));\n");
++        }
++        else
++        {
++            shader_addline(buffer, "%s == 0.0 ? 1.0 : pow(abs(%s), %s));\n",
++                    src1_param.param_str, src0_param.param_str, src1_param.param_str);
++        }
+     }
+ }
+ 
+@@ -4382,11 +4444,15 @@ static void shader_glsl_scalar_op(const struct wined3d_shader_instruction *ins)
+ {
+     DWORD shader_version = WINED3D_SHADER_VERSION(ins->ctx->reg_maps->shader_version.major,
+             ins->ctx->reg_maps->shader_version.minor);
++    static const float max_float = FLT_MAX, min_float = -FLT_MAX;
++    struct shader_glsl_ctx_priv *priv = ins->ctx->backend_data;
+     struct wined3d_string_buffer *buffer = ins->ctx->buffer;
++    struct wined3d_string_buffer *suffix;
+     struct glsl_src_param src0_param;
+-    const char *prefix, *suffix;
+     unsigned int dst_size;
+     DWORD dst_write_mask;
++    const char *prefix;
++    BOOL guard_inf;
+ 
+     dst_write_mask = shader_glsl_append_dst(buffer, ins);
+     dst_size = shader_glsl_get_write_mask_size(dst_write_mask);
+@@ -4396,41 +4462,78 @@ static void shader_glsl_scalar_op(const struct wined3d_shader_instruction *ins)
+ 
+     shader_glsl_add_src_param(ins, &ins->src[0], dst_write_mask, &src0_param);
+ 
++    guard_inf = wined3d_settings.multiply_special == 1 && shader_version < WINED3D_SHADER_VERSION(4, 0);
++    suffix = string_buffer_get(priv->string_buffers);
++
+     switch (ins->handler_idx)
+     {
+         case WINED3DSIH_EXP:
+         case WINED3DSIH_EXPP:
+             prefix = "exp2(";
+-            suffix = ")";
++            string_buffer_sprintf(suffix, ")");
+             break;
+ 
+         case WINED3DSIH_LOG:
+         case WINED3DSIH_LOGP:
+-            prefix = "log2(abs(";
+-            suffix = "))";
++            if (guard_inf)
++            {
++                prefix = "max(log2(abs(";
++                string_buffer_sprintf(suffix, ")), ");
++                shader_glsl_append_imm_vec(suffix, &min_float, 1, priv->gl_info);
++                shader_addline(suffix, ")");
++            }
++            else
++            {
++                prefix = "log2(abs(";
++                string_buffer_sprintf(suffix, "))");
++            }
+             break;
+ 
+         case WINED3DSIH_RCP:
+-            prefix = "1.0 / ";
+-            suffix = "";
++            if (guard_inf)
++            {
++                prefix = "clamp(1.0 / ";
++                string_buffer_sprintf(suffix, ", ");
++                shader_glsl_append_imm_vec(suffix, &min_float, 1, priv->gl_info);
++                shader_addline(suffix, ", ");
++                shader_glsl_append_imm_vec(suffix, &max_float, 1, priv->gl_info);
++                shader_addline(suffix, ")");
++            }
++            else
++            {
++                prefix = "1.0 / ";
++                string_buffer_clear(suffix);
++            }
+             break;
+ 
+         case WINED3DSIH_RSQ:
+-            prefix = "inversesqrt(abs(";
+-            suffix = "))";
++            if (guard_inf)
++            {
++                prefix = "min(inversesqrt(abs(";
++                string_buffer_sprintf(suffix, ")), ");
++                shader_glsl_append_imm_vec(suffix, &max_float, 1, priv->gl_info);
++                shader_addline(suffix, ")");
++            }
++            else
++            {
++                prefix = "inversesqrt(abs(";
++                string_buffer_sprintf(suffix, "))");
++            }
+             break;
+ 
+         default:
+             prefix = "";
+-            suffix = "";
++            string_buffer_clear(suffix);
+             FIXME("Unhandled instruction %#x.\n", ins->handler_idx);
+             break;
+     }
+ 
+     if (dst_size > 1 && shader_version < WINED3D_SHADER_VERSION(4, 0))
+-        shader_addline(buffer, "vec%u(%s%s%s));\n", dst_size, prefix, src0_param.param_str, suffix);
++        shader_addline(buffer, "vec%u(%s%s%s));\n", dst_size, prefix, src0_param.param_str, suffix->buffer);
+     else
+-        shader_addline(buffer, "%s%s%s);\n", prefix, src0_param.param_str, suffix);
++        shader_addline(buffer, "%s%s%s);\n", prefix, src0_param.param_str, suffix->buffer);
++
++    string_buffer_release(priv->string_buffers, suffix);
+ }
+ 
+ /** Process the WINED3DSIO_EXPP instruction in GLSL:
+@@ -4775,8 +4878,13 @@ static void shader_glsl_mad(const struct wined3d_shader_instruction *ins)
+     shader_glsl_add_src_param(ins, &ins->src[0], write_mask, &src0_param);
+     shader_glsl_add_src_param(ins, &ins->src[1], write_mask, &src1_param);
+     shader_glsl_add_src_param(ins, &ins->src[2], write_mask, &src2_param);
+-    shader_addline(ins->ctx->buffer, "(%s * %s) + %s);\n",
+-            src0_param.param_str, src1_param.param_str, src2_param.param_str);
++    if (wined3d_settings.multiply_special == 2 && ins->ctx->reg_maps->shader_version.major < 4)
++        shader_addline(ins->ctx->buffer, "mul%d(%s, %s) + %s);\n",
++                shader_glsl_get_write_mask_size(write_mask), src0_param.param_str,
++                src1_param.param_str, src2_param.param_str);
++    else
++        shader_addline(ins->ctx->buffer, "(%s * %s) + %s);\n",
++                src0_param.param_str, src1_param.param_str, src2_param.param_str);
+ }
+ 
+ /* Handles transforming all WINED3DSIO_M?x? opcodes for
+diff --git a/dlls/wined3d/wined3d_main.c b/dlls/wined3d/wined3d_main.c
+index 3b436919559..abf8153cff0 100644
+--- a/dlls/wined3d/wined3d_main.c
++++ b/dlls/wined3d/wined3d_main.c
+@@ -430,6 +430,8 @@ static BOOL wined3d_dll_init(HINSTANCE hInstDLL)
+             ERR_(winediag)("Setting strict shader math to %#x.\n", wined3d_settings.strict_shader_math);
+         if (!get_config_key_dword(hkey, appkey, env, "MaxShaderModelVS", &wined3d_settings.max_sm_vs))
+             TRACE("Limiting VS shader model to %u.\n", wined3d_settings.max_sm_vs);
++        if (!get_config_key_dword(hkey, appkey, env, "multiply_special", &wined3d_settings.multiply_special))
++            ERR_(winediag)("Setting multiply special to %#x.\n", wined3d_settings.multiply_special);
+         if (!get_config_key_dword(hkey, appkey, env, "MaxShaderModelHS", &wined3d_settings.max_sm_hs))
+             TRACE("Limiting HS shader model to %u.\n", wined3d_settings.max_sm_hs);
+         if (!get_config_key_dword(hkey, appkey, env, "MaxShaderModelDS", &wined3d_settings.max_sm_ds))
+diff --git a/dlls/wined3d/wined3d_private.h b/dlls/wined3d/wined3d_private.h
+index 2e0a541cea5..8af55a88eaf 100644
+--- a/dlls/wined3d/wined3d_private.h
++++ b/dlls/wined3d/wined3d_private.h
+@@ -477,6 +477,7 @@ struct wined3d_settings
+     unsigned int multisample_textures;
+     unsigned int sample_count;
+     unsigned int strict_shader_math;
++    unsigned int multiply_special;
+     unsigned int max_sm_vs;
+     unsigned int max_sm_hs;
+     unsigned int max_sm_ds;
+-- 
+2.45.2
+
+
+From 74b5c253bd23b953f3a0a7e8f06367171a1f6906 Mon Sep 17 00:00:00 2001
+From: Stian Low <wineryyyyy@gmail.com>
+Date: Fri, 8 May 2026 09:30:49 +0000
+Subject: [PATCH] wined3d: fix vk swapchain rendering too dark by supporting
+ rtvs for swapchain back_buffers > 1
+
+---
+ dlls/wined3d/swapchain.c | 13 +++++++++----
+ dlls/wined3d/view.c      | 12 ------------
+ 2 files changed, 9 insertions(+), 16 deletions(-)
+
+diff --git a/dlls/wined3d/swapchain.c b/dlls/wined3d/swapchain.c
+index d431df3f205..672cb21d792 100644
+--- a/dlls/wined3d/swapchain.c
++++ b/dlls/wined3d/swapchain.c
+@@ -646,8 +646,10 @@ static void swapchain_gl_present(struct wined3d_swapchain *swapchain,
+ 
+         wined3d_texture_load_location(back_buffer, 0, context, back_buffer->resource.draw_binding);
+ 
+-        swapchain_blit(swapchain, context, src_rect, dst_rect);
++        if (gl_info->supported[ARB_FRAMEBUFFER_SRGB])
++            gl_info->gl_ops.gl.p_glDisable(GL_FRAMEBUFFER_SRGB);
+ 
++        swapchain_blit(swapchain, context, src_rect, dst_rect);
+         if (swapchain->device->context_count > 1)
+         {
+             WARN_(d3d_perf)("Multiple contexts, calling glFinish() to enforce ordering.\n");
+@@ -661,7 +663,9 @@ static void swapchain_gl_present(struct wined3d_swapchain *swapchain,
+     if (context->d3d_info->fences)
+         wined3d_context_gl_submit_command_fence(context_gl);
+ 
+-    wined3d_swapchain_gl_rotate(swapchain, context);
++    /* Skip wined3d_swapchain_gl_rotate() to fix flickering for swapchain buffer_count > 1
++     * required for support of DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL 0x3
++     * https://gitlab.winehq.org/wine/wine/-/merge_requests/10567 */
+ 
+     TRACE("SwapBuffers called, Starting new frame\n");
+ 
+@@ -1288,8 +1292,9 @@ static void swapchain_vk_present(struct wined3d_swapchain *swapchain, const RECT
+         }
+     }
+ 
+-    wined3d_swapchain_vk_rotate(swapchain, context_vk);
+-
++    /* Skip wined3d_swapchain_vk_rotate() to fix flickering for swapchain buffer_count > 1
++     * required for support of DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL 0x3
++     * https://gitlab.winehq.org/wine/wine/-/merge_requests/10567 */
+     wined3d_texture_validate_location(swapchain->front_buffer, 0, WINED3D_LOCATION_DRAWABLE);
+     wined3d_texture_invalidate_location(swapchain->front_buffer, 0, ~WINED3D_LOCATION_DRAWABLE);
+ 
+diff --git a/dlls/wined3d/view.c b/dlls/wined3d/view.c
+index a506b0c6f18..79e06e706ae 100644
+--- a/dlls/wined3d/view.c
++++ b/dlls/wined3d/view.c
+@@ -620,12 +620,6 @@ static void wined3d_render_target_view_gl_cs_init(void *object)
+                         debug_d3dformat(resource->format->id), debug_d3dformat(view_gl->v.format->id));
+                 return;
+             }
+-            if (texture_gl->t.swapchain && texture_gl->t.swapchain->state.desc.backbuffer_count > 1)
+-            {
+-                FIXME("Swapchain views not supported.\n");
+-                return;
+-            }
+-
+             create_texture_view(&view_gl->gl_view, texture_gl->target, desc, texture_gl, view_gl->v.format);
+         }
+     }
+@@ -930,12 +924,6 @@ static void wined3d_render_target_view_vk_cs_init(void *object)
+         return;
+     }
+ 
+-    if (texture_vk->t.swapchain && texture_vk->t.swapchain->state.desc.backbuffer_count > 1)
+-    {
+-        FIXME("Swapchain views not supported.\n");
+-        return;
+-    }
+-
+     if (resource->bind_flags & WINED3D_BIND_RENDER_TARGET)
+         vk_usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+     if (resource->bind_flags & WINED3D_BIND_DEPTH_STENCIL)
+-- 
+2.53.0
+
+

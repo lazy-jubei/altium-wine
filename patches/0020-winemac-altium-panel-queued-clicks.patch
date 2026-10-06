@@ -1,0 +1,46 @@
+From: Altium Wine kit contributors
+Subject: [PATCH] winemac: Finish queued AD17 panel clicks before Close
+
+Native releases can be handled before preceding Windows mouse messages. Drain
+only earlier mouse messages for the matching AD17 floating panel before moving
+activation to its enabled owner. This prevents a delayed down from reactivating
+a view after Close detaches it. Native event processing is already guarded
+against reentrancy; unrelated window/input paths stay unchanged. Apply after 0017.
+
+--- a/dlls/winemac.drv/mouse.c
++++ b/dlls/winemac.drv/mouse.c
+@@ -888,11 +888,12 @@
+     UNICODE_STRING class_name = {0, sizeof(class_buffer), class_buffer};
+     HWND button, owner;
+     RECT panel_rect, button_rect;
+-    UINT context, dpi;
++    UINT context, dpi, count;
++    MSG msg;
+     BOOL closing = FALSE;
+ 
+     if (event->mouse_button.pressed || event->mouse_button.button != 0
+-            || hwnd != get_active_window() || wcsicmp(base ? base + 1 : image, u"DXP.EXE")) return;
++            || wcsicmp(base ? base + 1 : image, u"DXP.EXE")) return;
+     NtUserGetClassName(hwnd, FALSE, &class_name);
+     if (wcscmp(class_buffer, u"TClientBarControl")) return;
+     owner = NtUserGetWindowRelative(hwnd, GW_OWNER);
+@@ -913,6 +914,19 @@
+     }
+     NtUserSetThreadDpiAwarenessContext(context);
+     if (!closing) return;
++
++    /* Native events can outrun Windows' hardware-message queue. Finish the
++     * panel's earlier clicks (including Close down) before transferring focus;
++     * otherwise a delayed down would activate it again after this transfer.
++     * The current native event prevents nested macdrv event processing. */
++    for (count = 0; count < 32 && NtUserPeekMessage(&msg, hwnd,
++            WM_MOUSEFIRST, WM_MOUSELAST, PM_REMOVE | PM_NOYIELD); ++count)
++    {
++        NtUserDispatchMessage(&msg);
++    }
++    NtUserSetThreadDpiAwarenessContext(context);
++    if (hwnd != get_active_window() || !NtUserIsWindowVisible(hwnd)
++            || !NtUserIsWindowEnabled(owner)) return;
+     TRACE("transferring Altium panel %p activation to owner %p before Close mouse-up\n", hwnd, owner);
+     if (NtUserGetForegroundWindow() == hwnd)
+         NtUserSetForegroundWindowInternal(owner);

@@ -1,0 +1,196 @@
+From: Altium-on-Wine kit
+Subject: winemac.drv: Recover separately owned modal dialogs after deactivation
+
+Base: 0000 + 0002 + 0007
+
+The foreground desktop is not the blocking dialog. Find an enabled popup on
+the same GUI thread whose separate root owner is disabled, excluding no-activate
+overlays and modeless panels. Recover it on mouse activation and app activation.
+
+--- a/dlls/winemac.drv/mouse.c
++++ b/dlls/winemac.drv/mouse.c
+@@ -831,32 +831,50 @@
+  *
+  * Handler for MOUSE_BUTTON events.
+  */
+-/* Altium-on-Wine kit: like Windows, a click on a window that a modal dialog has disabled
+- * brings that dialog forward. Without this, Cocoa raises the clicked (disabled) window over
+- * its own dialog and the app looks frozen. Delphi apps hit this all the time: dialogs are owned
+- * by the hidden TApplication window, so no owner/owned ordering keeps the dialog above the main
+- * form. The dialog is either the last active popup of the disabled window's owner chain or, when
+- * the main form is not owned by the TApplication window (Altium Designer 17), the foreground
+- * window of the same thread. */
++/* Delphi's main form can be unowned while its modal dialog is owned by a
++ * separate, disabled TApplication window. After application deactivation the
++ * foreground window is the desktop, so it cannot identify that dialog. */
++static BOOL is_activatable_popup(HWND popup, DWORD thread)
++{
++    return popup && NtUserGetWindowThread(popup, NULL) == thread
++            && NtUserIsWindowVisible(popup) && NtUserIsWindowEnabled(popup)
++            && !(NtUserGetWindowLongW(popup, GWL_EXSTYLE) & WS_EX_NOACTIVATE);
++}
++
++HWND macdrv_get_blocking_popup(HWND hwnd)
++{
++    HWND owner, popup;
++    DWORD thread = hwnd ? NtUserGetWindowThread(hwnd, NULL) : GetCurrentThreadId();
++
++    if (hwnd && NtUserIsWindowEnabled(hwnd)) return NULL;
++    owner = hwnd ? NtUserGetAncestor(hwnd, GA_ROOTOWNER) : NULL;
++    popup = owner ? NtUserGetLastActivePopup(owner) : NULL;
++    if (popup != hwnd && popup != owner && is_activatable_popup(popup, thread)) return popup;
++
++    popup = NtUserGetForegroundWindow();
++    if (popup != hwnd && popup != owner && is_activatable_popup(popup, thread)) return popup;
++
++    /* Walk in z order and accept only an owned popup whose root owner is
++     * disabled. Exclude tooltips / heads-up overlays (WS_EX_NOACTIVATE),
++     * modeless panels and windows belonging to other threads. */
++    for (popup = NtUserGetWindowRelative(NtUserGetDesktopWindow(), GW_CHILD); popup;
++            popup = NtUserGetWindowRelative(popup, GW_HWNDNEXT))
++    {
++        if (popup == hwnd || !is_activatable_popup(popup, thread)
++                || !(NtUserGetWindowLongW(popup, GWL_STYLE) & WS_POPUP)) continue;
++        owner = NtUserGetAncestor(popup, GA_ROOTOWNER);
++        if (owner && owner != popup && !NtUserIsWindowEnabled(owner)) return popup;
++    }
++    return NULL;
++}
++
+ static void activate_blocking_popup(HWND hwnd)
+ {
+-    HWND owner, popup, fg;
+-
+-    if (!hwnd || NtUserIsWindowEnabled(hwnd)) return;
+-    if (!(owner = NtUserGetAncestor(hwnd, GA_ROOTOWNER))) owner = hwnd;
+-    popup = NtUserGetLastActivePopup(owner);
+-    if (!popup || popup == hwnd || popup == owner)
+-    {
+-        popup = NULL;
+-        if ((fg = NtUserGetForegroundWindow()) && fg != hwnd && fg != owner
+-            && NtUserGetWindowThread(fg, NULL) == NtUserGetWindowThread(hwnd, NULL))
+-            popup = fg;
+-    }
++    HWND popup = macdrv_get_blocking_popup(hwnd);
++
+     if (!popup) return;
+-    if (!NtUserIsWindowVisible(popup) || !NtUserIsWindowEnabled(popup)) return;
+-
+     TRACE("win %p is disabled; activating its popup %p\n", hwnd, popup);
+-    NtUserSetForegroundWindowInternal(popup);
++    macdrv_raise_modal_popup(popup);
+ }
+ 
+ void macdrv_mouse_button(HWND hwnd, const macdrv_event *event)
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1982,12 +1982,50 @@
+  *
+  * Handler for APP_ACTIVATED events.
+  */
++void macdrv_raise_modal_popup(HWND popup)
++{
++    struct macdrv_win_data *data;
++    HWND owner = NtUserGetAncestor(popup, GA_ROOTOWNER);
++
++    NtUserSetWindowPos(popup, HWND_TOP, 0, 0, 0, 0,
++            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
++    NtUserSetForegroundWindowInternal(popup);
++    /* Cocoa orders owned windows as a group. Raise the disabled root owner
++     * first so the group clears a separately owned main form. */
++    if (owner && owner != popup && (data = get_win_data(owner)))
++    {
++        if (data->cocoa_window)
++            macdrv_order_cocoa_window(data->cocoa_window, NULL, NULL, FALSE);
++        release_win_data(data);
++    }
++    if (!(data = get_win_data(popup))) return;
++    /* SetWindowPos can be a no-op when Wine's order is already correct.
++     * Explicitly repair the native order after Cocoa app activation. */
++    if (data->cocoa_window && data->on_screen)
++        macdrv_order_cocoa_window(data->cocoa_window, NULL, NULL, FALSE);
++    release_win_data(data);
++}
++
++
+ void macdrv_app_activated(void)
+ {
+     HWND active = get_active_window();
+-
+-    TRACE("active %p\n", active);
++    HWND popup = macdrv_get_blocking_popup(active);
++
++    /* The active dialog may already be first in Wine's z order while Cocoa
++     * has raised the separately owned main window above it. */
++    if (!popup && active && NtUserIsWindowEnabled(active))
++    {
++        HWND owner = NtUserGetAncestor(active, GA_ROOTOWNER);
++        if (owner != active && owner && !NtUserIsWindowEnabled(owner)) popup = active;
++    }
++    TRACE("active %p, blocking popup %p\n", active, popup);
+     macdrv_UpdateClipboard();
++    if (popup)
++    {
++        active = popup;
++        macdrv_raise_modal_popup(popup);
++    }
+ 
+     /* Altium-on-Wine kit: when the app comes back to the front, put its active window (often a
+      * modal dialog) back on top; Cocoa may have ordered another of our windows above it. */
+@@ -2091,7 +2129,14 @@
+  */
+ void macdrv_window_brought_forward(HWND hwnd)
+ {
+-    TRACE("win %p\n", hwnd);
++    HWND popup = macdrv_get_blocking_popup(hwnd);
++
++    TRACE("win %p, blocking popup %p\n", hwnd, popup);
++    if (popup)
++    {
++        macdrv_raise_modal_popup(popup);
++        return;
++    }
+     NtUserSetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+ }
+ 
+--- a/dlls/winemac.drv/macdrv.h
++++ b/dlls/winemac.drv/macdrv.h
+@@ -238,6 +238,8 @@
+ extern BOOL query_resize_start(HWND hwnd);
+ extern BOOL query_min_max_info(HWND hwnd);
+ 
++extern HWND macdrv_get_blocking_popup(HWND hwnd);
++extern void macdrv_raise_modal_popup(HWND popup);
+ extern void macdrv_mouse_button(HWND hwnd, const macdrv_event *event);
+ extern void macdrv_mouse_moved(HWND hwnd, const macdrv_event *event);
+ extern void macdrv_mouse_scroll(HWND hwnd, const macdrv_event *event);
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -107,6 +107,7 @@
+ 
+     - (void) setupObservations;
+     - (void) applicationDidBecomeActive:(NSNotification *)notification;
++    - (void) postWineAppActivated;
+ 
+     static void PerformRequest(void *info);
+ 
+@@ -2232,6 +2233,10 @@
+         // movement deltas are invalidated.  Make sure the next mouse move event
+         // starts over from an absolute baseline.
+         forceNextMouseMoveAbsolute = TRUE;
++
++        /* Notify Wine after Cocoa restores its window order. An early
++         * notification can raise a modal only for Cocoa to cover it again. */
++        [self postWineAppActivated];
+     }
+ 
+     - (void)applicationDidResignActive:(NSNotification *)notification
+@@ -2309,7 +2314,7 @@
+         return ret;
+     }
+ 
+-    - (void)applicationWillBecomeActive:(NSNotification *)notification
++    - (void)postWineAppActivated
+     {
+         macdrv_event* event = macdrv_create_event(APP_ACTIVATED, nil);
+         event->deliver = 1;

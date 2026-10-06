@@ -1,0 +1,1326 @@
+From: Altium Wine kit contributors
+Subject: winemac: Safe schematic compositing, parallel/native copies and input fixes
+
+Final implementation, replacing the unpublished 0023–0028 sequence.
+Preserves CAD pixels, input, modal ordering and tooltip transparency.
+
+--- a/dlls/winemac.drv/Makefile.in
++++ b/dlls/winemac.drv/Makefile.in
+@@ -23,7 +23,9 @@
+ 	cocoa_cursorclipping.m \
+ 	cocoa_display.m \
+ 	cocoa_event.m \
++	cocoa_gdicopy.m \
+ 	cocoa_main.m \
++	cocoa_schematicpan.m \
+ 	cocoa_opengl.m \
+ 	cocoa_status_item.m \
+ 	cocoa_window.m \
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -1347,9 +1347,13 @@
+             NSPoint point = [self flippedMouseLocation:NSPointFromCGPoint(cgpoint)];
+             NSInteger windowUnderNumber;
+ 
+-            windowUnderNumber = [NSWindow windowNumberAtPoint:point
+-                                  belowWindowWithWindowNumber:0];
+-            targetWindow = (WineWindow*)[NSApp windowWithWindowNumber:windowUnderNumber];
++            windowUnderNumber = 0;
++            do
++            {
++                windowUnderNumber = [NSWindow windowNumberAtPoint:point
++                                      belowWindowWithWindowNumber:windowUnderNumber];
++                targetWindow = (WineWindow*)[NSApp windowWithWindowNumber:windowUnderNumber];
++            } while ([targetWindow isKindOfClass:[WineWindow class]] && targetWindow.ignoresMouseEvents);
+             if (!NSMouseInRect(point, [targetWindow contentRectForFrameRect:[targetWindow frame]], NO))
+                 targetWindow = nil;
+         }
+@@ -1482,6 +1486,7 @@
+ 
+         if ([window isKindOfClass:[WineWindow class]] &&
+             type == NSEventTypeLeftMouseDown &&
++            !window.disabled &&
+             ![theEvent wine_commandKeyDown])
+         {
+             NSWindowButton windowButton;
+@@ -1784,6 +1789,8 @@
+         BOOL ret = FALSE;
+         NSEventType type = [anEvent type];
+ 
++        macdrv_altium_pan_event(anEvent);
++
+         if (type == NSEventTypeFlagsChanged)
+             self.lastFlagsChanged = anEvent;
+         else if (type == NSEventTypeMouseMoved || type == NSEventTypeLeftMouseDragged ||
+@@ -1826,6 +1833,18 @@
+                     [window postKeyEvent:anEvent];
+             }
+         }
++
++        /* Wine has already received the mouse event and can restore the
++         * blocking popup. Do not then let AppKit raise its disabled owner
++         * above that popup, undoing Wine's repair of Delphi modal ordering. */
++        if ([anEvent.window isKindOfClass:[WineWindow class]] &&
++            [(WineWindow *)anEvent.window disabled] &&
++            (type == NSEventTypeLeftMouseDown || type == NSEventTypeLeftMouseUp ||
++             type == NSEventTypeRightMouseDown || type == NSEventTypeRightMouseUp ||
++             type == NSEventTypeOtherMouseDown || type == NSEventTypeOtherMouseUp ||
++             type == NSEventTypeLeftMouseDragged || type == NSEventTypeRightMouseDragged ||
++             type == NSEventTypeOtherMouseDragged))
++            ret = TRUE;
+ 
+         return ret;
+     }
+--- /dev/null
++++ b/dlls/winemac.drv/cocoa_gdicopy.m
+@@ -0,0 +1,253 @@
++/*
++ * Parallel GDI copies for Altium Designer 17 on macOS.
++ *
++ * Copyright 2026 lazy-jubei
++ * Leading dib_info layout: Copyright 2011 Huw Davies.
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++ * Lesser General Public License for more details.
++ */
++
++#include "config.h"
++#include <dlfcn.h>
++#include "macdrv_cocoa.h"
++#include <dispatch/dispatch.h>
++#include <mach-o/dyld.h>
++#include <mach-o/loader.h>
++#include <mach/mach.h>
++#include <mach/mach_vm.h>
++#include <stdint.h>
++#include <stddef.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <limits.h>
++static char native_worker_path[PATH_MAX];
++#include "native_gdi_client.h"
++
++/* These private interfaces are accepted only for the verified Gcenx 11.16
++ * win32u UUID below. Replacing that module disables the optimization. This
++ * preserves the stock module's FreeType, Vulkan and Staging implementation. */
++struct altium_rect { int32_t left, top, right, bottom; };
++struct altium_point { int32_t x, y; };
++struct altium_dib
++{
++    int32_t bit_count, width, height, compression;
++    struct altium_rect rect;
++    int32_t stride;
++    void *bits;
++};
++_Static_assert(offsetof(struct altium_dib, bits) == 0x28, "Wine 11.16 dib_info ABI");
++
++typedef void (*altium_copy_func)(const struct altium_dib *, const struct altium_rect *,
++                                const struct altium_dib *, const struct altium_point *, int, int);
++static altium_copy_func original_copy, *copy_table1, *copy_table2;
++static int copy_workers = 2, parallel_enabled, pan_enabled, native_enabled, native_workers=2;
++static uint32_t (*message_pos)(void);
++
++struct altium_copy_work
++{
++    uint8_t *src, *dst;
++    int src_stride, dst_stride, width, height, tasks, reverse;
++};
++
++static uint8_t *altium_pixel(const struct altium_dib *dib, int x, int y)
++{
++    return (uint8_t *)dib->bits + ((int64_t)y + dib->rect.top) * dib->stride +
++           ((int64_t)x + dib->rect.left) * 4;
++}
++
++static void altium_copy_rows(void *context, size_t task)
++{
++    struct altium_copy_work *w = context;
++    int y, first = w->height * task / w->tasks, last = w->height * (task + 1) / w->tasks;
++    for (y = first; y < last; y++)
++        memmove(w->dst + (int64_t)y * w->dst_stride, w->src + (int64_t)y * w->src_stride,
++                (size_t)w->width * 4);
++}
++
++static void altium_copy_columns(void *context, size_t task)
++{
++    struct altium_copy_work *w = context;
++    int n, blocks = (w->width + 15) / 16;
++    int first = (blocks * task / w->tasks) * 16, last = (blocks * (task + 1) / w->tasks) * 16;
++    if (last > w->width) last = w->width;
++    if (first >= last) return;
++    for (n = 0; n < w->height; n++)
++    {
++        int y = w->reverse ? w->height - 1 - n : n;
++        memmove(w->dst + (int64_t)y * w->dst_stride + first * 4,
++                w->src + (int64_t)y * w->src_stride + first * 4, (size_t)(last - first) * 4);
++    }
++}
++
++static void altium_parallel_copy(const struct altium_dib *dst, const struct altium_rect *rc,
++                                 const struct altium_dib *src, const struct altium_point *origin,
++                                 int rop, int overlap)
++{
++    int width = rc->right - rc->left, height = rc->bottom - rc->top;
++    int independent, vertical;
++    int present = (pan_enabled || native_enabled) && rop == 13 &&
++                  src->bit_count == 32 && dst->bit_count == 32 &&
++                  src->bits != dst->bits && src->stride != dst->stride &&
++                  width > 1000 && height > 500 && width == src->width && height == src->height &&
++                  !origin->x && !origin->y && !rc->left && !rc->top &&
++                  !src->rect.left && !src->rect.top && dst->rect.left >= 0 && dst->rect.top >= 0 &&
++                  dst->rect.left + width <= dst->width && dst->rect.top + height <= dst->height;
++    uint32_t position = present && pan_enabled && message_pos ? message_pos() : 0;
++    int64_t sd, dd;
++    uintptr_t slo, shi, dlo, dhi;
++    uint8_t *s, *d;
++    struct altium_copy_work work;
++
++    /* Only a complete, non-overlapping viewport transfer is delegated. The
++     * worker writes the existing destination pixels and confirms completion
++     * before GDI returns; failed startup or IPC falls back to Wine. Active
++     * pan previews retain the ordinary copy path to avoid competing updates. */
++    if (native_enabled && present && !macdrv_altium_pan_preview_active() && src->stride > 0 && dst->stride > 0)
++    {
++        uint8_t *nsrc=altium_pixel(src,origin->x,origin->y), *ndst=altium_pixel(dst,rc->left,rc->top);
++        uintptr_t se=(uintptr_t)nsrc+(uint64_t)(height-1)*src->stride+(uint64_t)width*4;
++        uintptr_t de=(uintptr_t)ndst+(uint64_t)(height-1)*dst->stride+(uint64_t)width*4;
++        if ((se<=(uintptr_t)ndst || de<=(uintptr_t)nsrc) &&
++            arm_copy(ndst,nsrc,dst->stride,src->stride,width,height,0,native_workers,NULL)) goto complete;
++    }
++
++    /* Keep small copies and every other raster operation on Wine's path. */
++    if (!parallel_enabled || rop != 13 || src->bit_count != 32 || dst->bit_count != 32 || width < 128 || height < 128 ||
++        (uint64_t)width * height < 524288 || (uint64_t)width * height > 67108864)
++        goto fallback;
++
++    s = altium_pixel(src, origin->x, origin->y);
++    d = altium_pixel(dst, rc->left, rc->top);
++    sd = (int64_t)(height - 1) * src->stride;
++    dd = (int64_t)(height - 1) * dst->stride;
++    slo = (uintptr_t)s + (sd < 0 ? sd : 0); shi = (uintptr_t)s + (sd > 0 ? sd : 0) + (size_t)width * 4;
++    dlo = (uintptr_t)d + (dd < 0 ? dd : 0); dhi = (uintptr_t)d + (dd > 0 ? dd : 0) + (size_t)width * 4;
++    independent = !(slo < dhi && dlo < shi);
++
++    /* Horizontal scrolling can split into rows only when rows cannot alias.
++     * The memmove within each row retains the horizontal dependency order. */
++    if (!independent && src->bits == dst->bits && src->stride == dst->stride &&
++        origin->y + src->rect.top == rc->top + dst->rect.top &&
++        llabs((long long)src->stride) >= (int64_t)width * 4 + llabs((int64_t)s - (int64_t)d))
++        independent = 1;
++
++    /* Pure vertical scrolling splits into columns. Each column traverses rows
++     * in Wine's overlap order, with no cross-column source dependency. Diagonal
++     * overlaps remain entirely on the original path. */
++    vertical = src->bits == dst->bits && src->stride == dst->stride &&
++               rc->left + dst->rect.left == origin->x + src->rect.left &&
++               llabs((long long)src->stride) >= (int64_t)width * 4;
++    if (!independent && !vertical) goto fallback;
++
++    work = (struct altium_copy_work){s, d, src->stride, dst->stride, width, height,
++                                     copy_workers, !!(overlap & 8)};
++    /* Synchronous completion preserves GDI's caller-visible pixel ordering. */
++    dispatch_apply_f(work.tasks, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0),
++                     &work, independent ? altium_copy_rows : altium_copy_columns);
++    goto complete;
++
++fallback:
++    original_copy(dst, rc, src, origin, rop, overlap);
++complete:
++    if (present && pan_enabled && message_pos)
++        macdrv_altium_pan_note_copy(dst->bits, dst->stride,
++            CGRectMake(dst->rect.left, dst->rect.top, width, height),
++            CGPointMake((int16_t)position, (int16_t)(position >> 16)));
++}
++
++static int altium_hook_image(const struct mach_header *header, intptr_t slide)
++{
++    const uint8_t expected_uuid[16] = {0x4e,0xe2,0xce,0x2b,0x55,0xa5,0x39,0x87,
++                                       0x96,0xc2,0x50,0xc8,0x05,0x59,0xb3,0x37};
++    const uint8_t prologue[] = {0x55,0x48,0x89,0xe5,0x41,0x57,0x41,0x56,
++                                0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xec,0x48};
++    const struct load_command *lc;
++    uint32_t i;
++    uintptr_t code, page_address;
++    size_t page;
++    int matches = 0;
++    altium_copy_func *table1, *table2;
++
++    if (header->magic != MH_MAGIC_64) return 0;
++    lc = (const void *)((const struct mach_header_64 *)header + 1);
++    for (i = 0; i < header->ncmds; i++)
++    {
++        if (lc->cmd == LC_UUID && lc->cmdsize >= sizeof(struct uuid_command) &&
++            !memcmp(((const struct uuid_command *)lc)->uuid, expected_uuid, sizeof(expected_uuid)))
++            matches = 1;
++        lc = (const void *)((const char *)lc + lc->cmdsize);
++    }
++    if (!matches) return 0;
++
++    code = slide + 0x348c0;
++    table1 = (void *)(slide + 0x1cc778); table2 = (void *)(slide + 0x1cc808);
++    if (memcmp((void *)code, prologue, sizeof(prologue)) ||
++        (uintptr_t)*table1 != code || (uintptr_t)*table2 != code) return 0;
++    page = getpagesize(); page_address = (uintptr_t)table1 & ~(uintptr_t)(page - 1);
++    if (((uintptr_t)table2 & ~(uintptr_t)(page - 1)) != page_address) return 0;
++    if (mach_vm_protect(mach_task_self(), page_address, page, 0,
++                         VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) return 0;
++
++    original_copy = (altium_copy_func)code;
++    copy_table1 = table1; copy_table2 = table2;
++    *table1 = altium_parallel_copy; *table2 = altium_parallel_copy;
++    mach_vm_protect(mach_task_self(), page_address, page, 0, VM_PROT_READ);
++    return 1;
++}
++
++__attribute__((constructor)) static void altium_gdi_start(void)
++{
++    const char *enabled = getenv("ALTIUM_PARALLEL_GDI"), *workers;
++    const char *pan = getenv("ALTIUM_SMOOTH_SCHEMATIC_PAN");
++    uint32_t i;
++    parallel_enabled = enabled && !strcmp(enabled, "1");
++    pan_enabled = pan && !strcmp(pan, "1");
++    enabled=getenv("ALTIUM_NATIVE_GDI");native_enabled=enabled&&!strcmp(enabled,"1");
++    if(native_enabled){
++        Dl_info info;char *slash;
++        if(dladdr((void*)altium_gdi_start,&info)&&info.dli_fname&&strlen(info.dli_fname)<sizeof(native_worker_path)-50){
++            strcpy(native_worker_path,info.dli_fname);slash=strrchr(native_worker_path,'/');
++            if(slash)strcpy(slash,"/../../../bin/altium-gdi-copy-arm64");
++        }
++        workers=getenv("ALTIUM_NATIVE_GDI_WORKERS");
++        if(workers&&atoi(workers)>=1&&atoi(workers)<=4)native_workers=atoi(workers);
++    }
++    if (!parallel_enabled && !pan_enabled && !native_enabled) return;
++    message_pos = dlsym(RTLD_DEFAULT, "NtUserGetMessagePos");
++    workers = getenv("ALTIUM_GDI_WORKERS");
++    if (workers && atoi(workers) >= 1 && atoi(workers) <= 8) copy_workers = atoi(workers);
++    /* win32u is already loaded as this driver's native dependency. Avoid a
++     * permanent dyld callback into a driver that might later be unloaded. */
++    for (i = 0; i < _dyld_image_count(); i++)
++        if (altium_hook_image(_dyld_get_image_header(i), _dyld_get_image_vmaddr_slide(i)))
++        {
++            fprintf(stderr, "ALTIUM_GDI: parallel=%d (%d workers), schematic preview=%d, native viewport=%d\n",
++                    parallel_enabled, copy_workers, pan_enabled && !!message_pos,native_enabled);
++            return;
++        }
++    fprintf(stderr, "ALTIUM_GDI: unrecognized win32u; using ordinary copies\n");
++}
++
++__attribute__((destructor)) static void altium_gdi_stop(void)
++{
++    size_t page;
++    uintptr_t address;
++    altium_native_shutdown();
++    if (!original_copy) return;
++    page = getpagesize(); address = (uintptr_t)copy_table1 & ~(uintptr_t)(page - 1);
++    if (mach_vm_protect(mach_task_self(), address, page, 0,
++                         VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) return;
++    if (*copy_table1 == altium_parallel_copy) *copy_table1 = original_copy;
++    if (*copy_table2 == altium_parallel_copy) *copy_table2 = original_copy;
++    mach_vm_protect(mach_task_self(), address, page, 0, VM_PROT_READ);
++}
+--- /dev/null
++++ b/dlls/winemac.drv/cocoa_schematicpan.m
+@@ -0,0 +1,547 @@
++/*
++ * Altium 17 schematic pan preview.
++ * Copyright 2026 lazy-jubei
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++ * Lesser General Public License for more details.
++ */
++
++#include "config.h"
++#import <AppKit/AppKit.h>
++#import <QuartzCore/QuartzCore.h>
++#import <objc/runtime.h>
++#include <pthread.h>
++#include <stdlib.h>
++#include <string.h>
++#include "macdrv_cocoa.h"
++#import "cocoa_window.h"
++
++/* Only the verified 11.16 copy hook supplies these records. The surface's
++ * actual pixel pointer must match before a record can reach its Cocoa view.
++ * No Altium input is suppressed, synthesized, or delayed. */
++static pthread_mutex_t frame_mutex = PTHREAD_MUTEX_INITIALIZER;
++static struct
++{
++    const void *bits;
++    CGImageRef image;
++    struct macdrv_altium_pan_frame frame;
++} frames[8];
++static uint64_t next_frame;
++static char frame_key;
++static CALayer *preview_clip, *preview_image;
++/* Keep a short gesture-local history. Older drawings supply genuine pixels
++ * at the edges; never reuse them after editing, zooming or releasing. */
++#define PAN_HISTORY 3
++static struct { CALayer *layer; CGPoint anchor; } history[PAN_HISTORY];
++static unsigned int history_count;
++static NSView *preview_view;
++static struct macdrv_altium_pan_frame preview_frame;
++static CGPoint frame_anchor, pointer;
++static BOOL finishing;
++static double frame_time, frame_period;
++static unsigned int unsafe_transitions;
++static unsigned int pan_draws, pan_aligned, pan_smoothed, pan_uncached, pan_missing, pan_reset;
++static int preview_active;
++int macdrv_altium_pan_preview_active(void)
++{
++    return __atomic_load_n(&preview_active, __ATOMIC_ACQUIRE);
++}
++static uint64_t finish_sequence, generation;
++
++static pthread_once_t enabled_once = PTHREAD_ONCE_INIT;
++static BOOL pan_enabled;
++static void initialize_enabled(void)
++{
++    const char *value = getenv("ALTIUM_SMOOTH_SCHEMATIC_PAN");
++    pan_enabled = value && !strcmp(value, "1");
++}
++static BOOL enabled(void)
++{
++    pthread_once(&enabled_once, initialize_enabled);
++    return pan_enabled;
++}
++
++void macdrv_altium_pan_note_copy(const void *bits, int stride, CGRect viewport, CGPoint anchor)
++{
++    unsigned int i, slot = 0;
++    CGImageRef image = NULL;
++    /* Take the snapshot at the completed GDI copy, before its caller can start
++     * drawing another frame. Cocoa's live surface can already contain parts of
++     * the next drawing when its asynchronous presentation runs. */
++    if (macdrv_altium_pan_preview_active())
++    {
++        int width = viewport.size.width, height = viewport.size.height, y;
++        size_t row = (size_t)width * 4;
++        unsigned char *pixels = malloc(row * height);
++        if (pixels)
++        {
++            CGDataProviderRef provider;
++            CGColorSpaceRef space;
++            CFDataRef data;
++            const unsigned char *src = (const unsigned char *)bits +
++                (int)viewport.origin.y * (ptrdiff_t)stride + (int)viewport.origin.x * 4;
++            for (y = 0; y < height; ++y) memcpy(pixels + y * row, src + y * (ptrdiff_t)stride, row);
++            data = CFDataCreateWithBytesNoCopy(kCFAllocatorDefault, pixels, row * height, kCFAllocatorMalloc);
++            provider = data ? CGDataProviderCreateWithCFData(data) : NULL;
++            if (data) CFRelease(data);
++            else free(pixels);
++            if (provider)
++            {
++                space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
++                image = CGImageCreate(width, height, 8, 32, row, space,
++                    kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little,
++                    provider, NULL, FALSE, kCGRenderingIntentDefault);
++                CGColorSpaceRelease(space);
++                CGDataProviderRelease(provider);
++            }
++        }
++    }
++    pthread_mutex_lock(&frame_mutex);
++    for (i = 0; i < 8; ++i)
++    {
++        if (frames[i].bits == bits) { slot = i; break; }
++        if (frames[i].frame.sequence < frames[slot].frame.sequence) slot = i;
++    }
++    if (!macdrv_altium_pan_preview_active()) { CGImageRelease(image); image = NULL; }
++    CGImageRelease(frames[slot].image);
++    frames[slot].image = image;
++    frames[slot].bits = bits;
++    frames[slot].frame.viewport = viewport;
++    frames[slot].frame.anchor = anchor;
++    frames[slot].frame.sequence = ++next_frame;
++    pthread_mutex_unlock(&frame_mutex);
++}
++
++static CGImageRef copy_frame(uint64_t sequence)
++{
++    CGImageRef image = NULL;
++    unsigned int i;
++    pthread_mutex_lock(&frame_mutex);
++    for (i = 0; i < 8; ++i)
++        if (frames[i].frame.sequence == sequence) { image = CGImageRetain(frames[i].image); break; }
++    pthread_mutex_unlock(&frame_mutex);
++    return image;
++}
++
++void macdrv_altium_pan_get_frame(const void *bits, struct macdrv_altium_pan_frame *frame)
++{
++    unsigned int i;
++    memset(frame, 0, sizeof(*frame));
++    if (!enabled()) return;
++    pthread_mutex_lock(&frame_mutex);
++    for (i = 0; i < 8; ++i)
++        if (frames[i].bits == bits) { *frame = frames[i].frame; break; }
++    pthread_mutex_unlock(&frame_mutex);
++}
++
++static void clear_preview(void)
++{
++    unsigned int i;
++    const char *stats = getenv("ALTIUM_PAN_STATS");
++    if (preview_view && stats && !strcmp(stats, "1"))
++        fprintf(stderr, "ALTIUM_PAN: frames=%u aligned=%u smooth=%u raw=%u missing=%u reset=%u\n",
++                pan_draws, pan_aligned, pan_smoothed, pan_uncached, pan_missing, pan_reset);
++    [preview_clip removeFromSuperlayer];
++    [preview_clip release];
++    preview_clip = preview_image = nil;
++    preview_view = nil;
++    history_count = 0;
++    finishing = NO;
++    ++generation;
++    __atomic_store_n(&preview_active, 0, __ATOMIC_RELEASE);
++    pthread_mutex_lock(&frame_mutex);
++    for (i = 0; i < 8; ++i) { CGImageRelease(frames[i].image); frames[i].image = NULL; }
++    pthread_mutex_unlock(&frame_mutex);
++}
++
++void macdrv_altium_pan_cancel_view(id view)
++{
++    if (preview_view == view) clear_preview();
++}
++
++void macdrv_altium_pan_set_frame(id view, const struct macdrv_altium_pan_frame *frame)
++{
++    if (!enabled() || !frame->sequence) return;
++    objc_setAssociatedObject(view, &frame_key,
++        [NSValue valueWithBytes:frame objCType:@encode(struct macdrv_altium_pan_frame)],
++        OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++}
++
++static BOOL view_frame(NSView *view, struct macdrv_altium_pan_frame *frame)
++{
++    NSValue *value = objc_getAssociatedObject(view, &frame_key);
++    if (!value) return NO;
++    [value getValue:frame];
++    return frame->sequence != 0;
++}
++
++static BOOL can_preview(NSWindow *window)
++{
++    return [window isKindOfClass:[WineWindow class]] && ![(WineWindow *)window disabled] &&
++           ![(WineWindow *)window noForeground] && [window isVisible] && ![window isMiniaturized] &&
++           [window.title.lowercaseString containsString:@".schdoc"];
++}
++
++/* Is a rectangle covered by the union of complete cached drawings? Checking
++ * the bounding box alone is insufficient: diagonally offset frames leave two
++ * uncached corners. Split at every vertical edge and check the y intervals in
++ * each slab. This also proves coverage throughout an animation, not just at
++ * its endpoints. Coordinates here are logical points in the container layer. */
++static BOOL cached_rectangle(CGRect needed)
++{
++    CGRect rects[PAN_HISTORY];
++    CGFloat edges[2 + 2 * PAN_HISTORY], edge, y, top = CGRectGetMaxY(needed);
++    unsigned int count = 2, i, j;
++
++    edges[0] = CGRectGetMinX(needed);
++    edges[1] = CGRectGetMaxX(needed);
++    for (i = 0; i < history_count; ++i)
++    {
++        rects[i] = history[i].layer.frame;
++        edge = CGRectGetMinX(rects[i]);
++        if (edge > edges[0] && edge < edges[1]) edges[count++] = edge;
++        edge = CGRectGetMaxX(rects[i]);
++        if (edge > edges[0] && edge < edges[1]) edges[count++] = edge;
++    }
++    for (i = 1; i < count; ++i)
++        for (j = i; j && edges[j] < edges[j - 1]; --j)
++        { edge = edges[j]; edges[j] = edges[j - 1]; edges[j - 1] = edge; }
++    for (i = 1; i < count; ++i)
++    {
++        if (edges[i] == edges[i - 1]) continue;
++        y = CGRectGetMinY(needed);
++        while (y < top)
++        {
++            CGFloat next = y;
++            for (j = 0; j < history_count; ++j)
++                if (CGRectGetMinX(rects[j]) <= edges[i - 1] &&
++                    CGRectGetMaxX(rects[j]) >= edges[i] &&
++                    CGRectGetMinY(rects[j]) <= y && CGRectGetMaxY(rects[j]) > next)
++                    next = CGRectGetMaxY(rects[j]);
++            if (next == y) return NO;
++            y = next;
++        }
++    }
++    return YES;
++}
++
++/* Verify and refine the pan translation against actual CAD pixels. The mouse
++ * message position alone does not account for AD17's drag threshold, pixel
++ * rounding or coalesced input. Sample high-contrast edges throughout the image
++ * so a mostly blank sheet cannot make a wrong translation appear valid. */
++static BOOL register_images(CGImageRef previous, CGImageRef current, CGPoint guess, CGPoint *shift)
++{
++    struct { int x, y, axes; unsigned char rgb[9]; } samples[512];
++    CFDataRef old_data = CGDataProviderCopyData(CGImageGetDataProvider(previous));
++    CFDataRef new_data = CGDataProviderCopyData(CGImageGetDataProvider(current));
++    const unsigned char *old_bits, *new_bits, *a, *b;
++    int width = CGImageGetWidth(previous), height = CGImageGetHeight(previous);
++    size_t old_row = CGImageGetBytesPerRow(previous), new_row = CGImageGetBytesPerRow(current);
++    int count = 0, seen = 0, x, y, c, dx, dy, radius, i, checked, matches;
++    int plausible = 0, checked_x, checked_y;
++    uint32_t seed = 170028;
++    BOOL result = NO;
++    if (!old_data || !new_data || CGImageGetWidth(current) != width || CGImageGetHeight(current) != height)
++        goto done;
++    old_bits = CFDataGetBytePtr(old_data);
++    new_bits = CFDataGetBytePtr(new_data);
++    for (y = 4; y < height - 4; y += 24)
++        for (x = 4; x < width - 4; x += 24)
++        {
++            int contrast = 0, slot;
++            a = old_bits + y * old_row + x * 4;
++            for (c = 0; c < 3; ++c)
++                {
++                    if (abs(a[c] - a[c + 4]) >= 32) contrast |= 1;
++                    if (abs(a[c] - a[c + old_row]) >= 32) contrast |= 2;
++                }
++            if (!contrast) continue;
++            ++seen;
++            if (count < 512) slot = count++;
++            else { seed = seed * 1664525 + 1013904223; slot = seed % seen; if (slot >= 512) continue; }
++            samples[slot].x = x; samples[slot].y = y; samples[slot].axes = contrast;
++            memcpy(samples[slot].rgb, a, 3);
++            memcpy(samples[slot].rgb + 3, a + 4, 3);
++            memcpy(samples[slot].rgb + 6, a + old_row, 3);
++        }
++    if (count < 48) goto done;
++    for (radius = 0; radius <= 8; ++radius)
++      for (dy = (int)lround(guess.y) - radius; dy <= (int)lround(guess.y) + radius; ++dy)
++        for (dx = (int)lround(guess.x) - radius; dx <= (int)lround(guess.x) + radius; ++dx)
++        {
++            if (abs(dx - (int)lround(guess.x)) != radius && abs(dy - (int)lround(guess.y)) != radius) continue;
++            checked = matches = checked_x = checked_y = 0;
++            for (i = 0; i < count; ++i)
++            {
++                x = samples[i].x + dx; y = samples[i].y + dy;
++                if (x < 0 || x >= width - 1 || y < 0 || y >= height - 1) continue;
++                b = new_bits + y * new_row + x * 4;
++                ++checked;
++                if (samples[i].axes & 1) ++checked_x;
++                if (samples[i].axes & 2) ++checked_y;
++                /* Include the edge itself, not only its white neighboring
++                 * pixel. Otherwise a wrong shift into blank space can match. */
++                for (c = 0; c < 9; ++c)
++                {
++                    size_t offset = c < 3 ? c : c < 6 ? c + 1 : new_row + c - 6;
++                    if (abs(samples[i].rgb[c] - b[offset]) > 8) break;
++                }
++                if (c == 9) ++matches;
++                if (checked >= 32 && matches * 100 < checked * 60) break;
++            }
++            if (checked >= 48 && checked_x >= 24 && checked_y >= 24 && matches * 100 >= checked * 96)
++            {
++                if (++plausible > 1) goto done;
++                *shift = CGPointMake(dx, dy);
++            }
++        }
++    result = plausible == 1;
++done:
++    if (old_data) CFRelease(old_data);
++    if (new_data) CFRelease(new_data);
++    return result;
++}
++
++static void reset_history(void)
++{
++    while (history_count) [history[--history_count].layer removeFromSuperlayer];
++    [preview_image removeAnimationForKey:@"altium-pan-position"];
++    preview_clip.hidden = YES;
++    frame_anchor = CGPointZero;
++}
++
++static void cache_image(CGImageRef image, double scale)
++{
++    unsigned int i;
++    CALayer *layer;
++    if (history_count == PAN_HISTORY)
++    {
++        [history[0].layer removeFromSuperlayer];
++        memmove(history, history + 1, sizeof(history[0]) * (--history_count));
++    }
++    layer = [CALayer layer];
++    layer.anchorPoint = CGPointZero;
++    layer.bounds = preview_image.bounds;
++    layer.contentsScale = scale;
++    layer.contentsGravity = kCAGravityResize;
++    layer.contents = (id)image;
++    /* Integer texels keep the CAD drawing crisp even at fractional positions. */
++    layer.minificationFilter = layer.magnificationFilter = kCAFilterNearest;
++    history[history_count].layer = layer;
++    history[history_count++].anchor = frame_anchor;
++    [preview_image addSublayer:layer];
++    for (i = 0; i < history_count; ++i)
++        history[i].layer.position = CGPointMake(frame_anchor.x - history[i].anchor.x,
++                                               history[i].anchor.y - frame_anchor.y);
++}
++
++static void move_preview(CGPoint from)
++{
++    /* Never predict beyond the latest complete CAD drawing. A frame of latency
++     * buys actual pixels for newly exposed strips; mouse events still go to CAD
++     * unchanged. If the entire swept viewport is not covered, show its ordinary
++     * complete frame instead of transparent strips or invented edge pixels. */
++    CGPoint target = CGPointZero;
++    CGRect a = preview_image.bounds, b = a;
++    CABasicAnimation *animation;
++    a.origin.x -= from.x;
++    a.origin.y -= from.y;
++    [CATransaction begin];
++    [CATransaction setDisableActions:YES];
++    [preview_image removeAnimationForKey:@"altium-pan-position"];
++    preview_image.position = target;
++    preview_clip.hidden = !cached_rectangle(CGRectUnion(a, b));
++    if (from.x || from.y)
++    {
++        if (preview_clip.hidden)
++        {
++            ++pan_uncached;
++            if (fabs(from.x) > 4 && fabs(from.y) > 4) ++unsafe_transitions; else unsafe_transitions = 0;
++        }
++        else { ++pan_smoothed; unsafe_transitions = 0; }
++    }
++    if (!preview_clip.hidden)
++    {
++        animation = [CABasicAnimation animationWithKeyPath:@"position"];
++        animation.fromValue = [NSValue valueWithPoint:from];
++        animation.toValue = [NSValue valueWithPoint:target];
++        /* Follow actual CAD cadence; short fixed animations pause when a
++         * drawing takes longer than 33 ms. Coverage is verified for the entire
++         * longer sweep, and the delay stays bounded to 50 ms. */
++        animation.duration = MIN(.050, MAX(1.0 / 60.0, frame_period * 1.20));
++        animation.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionLinear];
++        [preview_image addAnimation:animation forKey:@"altium-pan-position"];
++    }
++    [CATransaction commit];
++}
++
++void macdrv_altium_pan_draw(id object)
++{
++    NSView *view = object;
++    struct macdrv_altium_pan_frame frame;
++    CGPoint displayed, anchor;
++    CALayer *root = view.layer;
++    CGImageRef image;
++    double scale, now, interval;
++
++    if (view != preview_view) return;
++    if (!view_frame(view, &frame) ||
++        !CGRectEqualToRect(frame.viewport, preview_frame.viewport) ||
++        !can_preview(view.window))
++    {
++        clear_preview();
++        return;
++    }
++    if (finishing && frame.sequence > finish_sequence &&
++        fabs(frame.anchor.x / root.contentsScale - pointer.x) <= 1 &&
++        fabs(frame.anchor.y / root.contentsScale - pointer.y) <= 1)
++    {
++        clear_preview();
++        return;
++    }
++    if (frame.sequence == preview_frame.sequence || !root.contents) return;
++    now = CACurrentMediaTime();
++    interval = now - frame_time;
++    if (frame_time && interval >= .010 && interval <= .100)
++        frame_period = frame_period * .75 + interval * .25;
++    frame_time = now;
++    ++pan_draws;
++    image = copy_frame(frame.sequence);
++    if (!image)
++    {
++        ++pan_missing;
++        reset_history();
++        preview_frame = frame;
++        if (++unsafe_transitions >= 3) clear_preview();
++        return;
++    }
++
++    scale = root.contentsScale;
++    displayed = !preview_clip.hidden && preview_image.presentationLayer ?
++                preview_image.presentationLayer.position : CGPointZero;
++    anchor = CGPointZero;
++    if (history_count)
++    {
++        CGPoint shift, guess = CGPointMake(frame.anchor.x - preview_frame.anchor.x,
++                                          frame.anchor.y - preview_frame.anchor.y);
++        if (register_images((CGImageRef)history[history_count - 1].layer.contents, image, guess, &shift))
++        {
++            ++pan_aligned;
++            anchor = CGPointMake(frame_anchor.x + shift.x / scale, frame_anchor.y + shift.y / scale);
++            displayed.x += frame_anchor.x - anchor.x;
++            displayed.y -= frame_anchor.y - anchor.y;
++        }
++        else { ++pan_reset; ++unsafe_transitions; reset_history(); displayed = CGPointZero; }
++    }
++    frame_anchor = anchor;
++    preview_frame = frame;
++
++    [CATransaction begin];
++    [CATransaction setDisableActions:YES];
++    cache_image(image, scale);
++    move_preview(displayed);
++    /* A gesture which keeps exposing unseen corners gains nothing from the
++     * cache. Return to ordinary rendering and re-enable native GDI copies for
++     * the rest of that drag, rather than paying snapshot costs throughout it. */
++    if (unsafe_transitions >= 3) clear_preview();
++    [CATransaction commit];
++    CGImageRelease(image);
++}
++
++static void begin_preview(NSEvent *event)
++{
++    NSWindow *window = event.window;
++    NSView *view = window.contentView;
++    CALayer *root = view.layer;
++    struct macdrv_altium_pan_frame frame;
++    CGRect viewport;
++    CGPoint local;
++    double scale;
++
++    clear_preview();
++    if (!can_preview(window) ||
++        !view_frame(view, &frame) || !root.contents || root.bounds.size.width < 600) return;
++    scale = root.contentsScale;
++    if (scale <= 0) return;
++    viewport = CGRectMake(frame.viewport.origin.x / scale, frame.viewport.origin.y / scale,
++                          frame.viewport.size.width / scale, frame.viewport.size.height / scale);
++    local = [view convertPoint:event.locationInWindow fromView:nil];
++    if (!CGRectContainsPoint(viewport, local) || !CGRectContainsRect(root.bounds, viewport)) return;
++    unsafe_transitions = 0;
++    frame_time = 0;
++    frame_period = 1.0 / 30.0;
++    pan_draws = pan_aligned = pan_smoothed = pan_uncached = pan_missing = pan_reset = 0;
++    __atomic_store_n(&preview_active, 1, __ATOMIC_RELEASE);
++    preview_view = view;
++    preview_frame = frame;
++    pointer = CGEventGetLocation(event.CGEvent);
++    frame_anchor = CGPointZero;
++    preview_clip = [[CALayer layer] retain];
++    preview_clip.geometryFlipped = root.geometryFlipped;
++    preview_clip.frame = viewport;
++    preview_clip.masksToBounds = YES;
++    /* Only display the cache when it covers the whole swept viewport. */
++    preview_clip.hidden = YES;
++    preview_image = [CALayer layer];
++    preview_image.anchorPoint = CGPointZero;
++    preview_image.bounds = CGRectMake(0, 0, viewport.size.width, viewport.size.height);
++    preview_image.position = CGPointZero;
++    [CATransaction begin];
++    [CATransaction setDisableActions:YES];
++    [preview_clip addSublayer:preview_image];
++    [root addSublayer:preview_clip];
++    [CATransaction commit];
++}
++
++void macdrv_altium_pan_event(id object)
++{
++    NSEvent *event = object;
++    NSEventType type = event.type;
++    const NSUInteger modifiers = NSEventModifierFlagShift | NSEventModifierFlagControl |
++                                 NSEventModifierFlagOption | NSEventModifierFlagCommand;
++    uint64_t current_generation;
++
++    if (!enabled()) return;
++    if (event.modifierFlags & modifiers)
++    {
++        if (preview_view) clear_preview();
++        return;
++    }
++    if (type == NSEventTypeRightMouseDown) begin_preview(event);
++    else if (type == NSEventTypeRightMouseDragged && preview_view)
++    {
++        if (event.window != preview_view.window) { clear_preview(); return; }
++        pointer = CGEventGetLocation(event.CGEvent);
++        /* The next completed CAD drawing drives interpolation. Advancing past
++         * that drawing would expose content which has never been rendered. */
++    }
++    else if (type == NSEventTypeRightMouseUp && preview_view)
++    {
++        /* Wait for the final queued CAD drawing, bounded if no new frame is
++         * necessary. A click/key/zoom cancels immediately before editing. */
++        pointer = CGEventGetLocation(event.CGEvent);
++        if (fabs(preview_frame.anchor.x / preview_view.layer.contentsScale - pointer.x) <= 1 &&
++            fabs(preview_frame.anchor.y / preview_view.layer.contentsScale - pointer.y) <= 1)
++        {
++            clear_preview();
++            return;
++        }
++        finishing = YES;
++        finish_sequence = preview_frame.sequence;
++        current_generation = generation;
++        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250000000), dispatch_get_main_queue(), ^{
++            if (finishing && generation == current_generation) clear_preview();
++        });
++    }
++    else if (preview_view && (type == NSEventTypeKeyDown || type == NSEventTypeScrollWheel ||
++                             type == NSEventTypeLeftMouseDown || type == NSEventTypeOtherMouseDown ||
++                             (type == NSEventTypeMouseMoved && !([NSEvent pressedMouseButtons] & 2))))
++        clear_preview();
++}
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -515,6 +515,7 @@
+ 
+     - (void) dealloc
+     {
++        macdrv_altium_pan_cancel_view(self);
+         [markedText release];
+         [glContexts release];
+         [pendingGlContexts release];
+@@ -562,6 +563,7 @@
+         {
+             layer.position = surfaceRect.origin;
+             layer.contents = (id)image;
++            macdrv_altium_pan_draw(self);
+             CFRelease(image);
+             [window windowDidDrawContent];
+ 
+@@ -1358,6 +1360,7 @@
+ 
+         self.disabled = state->disabled;
+         self.noForeground = state->no_foreground;
++        [self setIgnoresMouseEvents:state->ignores_mouse_events];
+ 
+         if (self.floating != state->floating)
+         {
+@@ -1470,7 +1473,13 @@
+     {
+         BOOL reordered = FALSE;
+ 
+-        if ([self isVisible] && (assumeVisible || [child isVisible]) && (self.floating || !child.floating))
++        /* Wine clamps a zero-sized no-activate Delphi owner to one pixel.
++         * Keep its children latent: ordering that invisible native group
++         * relative to a real window can put the dialog behind its owner. */
++        if ([self isVisible] && !NSIsEmptyRect(self.wine_fractionalFrame) &&
++            !(self.noForeground && NSWidth(self.wine_fractionalFrame) <= 1 &&
++              NSHeight(self.wine_fractionalFrame) <= 1) &&
++            (assumeVisible || [child isVisible]) && (self.floating || !child.floating))
+         {
+             if ([self level] > [child level])
+                 [child setLevel:[self level]];
+@@ -1579,7 +1588,10 @@
+         // Here, though, we may not actually be visible yet and adding a child
+         // won't make us visible.  The caller will have to call this method
+         // again after actually making us visible.
+-        if ([self isVisible] && (count = [latentChildWindows count]))
++        if ([self isVisible] && !NSIsEmptyRect(self.wine_fractionalFrame) &&
++            !(self.noForeground && NSWidth(self.wine_fractionalFrame) <= 1 &&
++              NSHeight(self.wine_fractionalFrame) <= 1) &&
++            (count = [latentChildWindows count]))
+         {
+             NSMutableArray* windowNumbers;
+             NSMutableArray* childWindows = [[self.childWineWindows mutableCopy] autorelease];
+@@ -2112,6 +2124,7 @@
+         if (disabled != newValue)
+         {
+             disabled = newValue;
++            if (disabled) macdrv_altium_pan_cancel_view(self.contentView);
+             [self adjustFeaturesForState];
+         }
+     }
+@@ -3624,11 +3637,13 @@
+  * Push a window surface color pixel update in a specified rect (in non-client
+  * area coordinates).
+  */
+-void macdrv_window_set_color_image(macdrv_window w, CGImageRef image, CGRect rect, CGRect dirty)
++void macdrv_window_set_color_image(macdrv_window w, CGImageRef image, CGRect rect, CGRect dirty,
++                                    const struct macdrv_altium_pan_frame *frame)
+ {
+ @autoreleasepool
+ {
+     WineWindow* window = (WineWindow*)w;
++    struct macdrv_altium_pan_frame pan_frame = *frame;
+ 
+     CGImageRetain(image);
+ 
+@@ -3636,6 +3651,7 @@
+         WineContentView *view = [window contentView];
+ 
+         [view setColorImage:image];
++        macdrv_altium_pan_set_frame(view, &pan_frame);
+         [view setSurfaceRect:cgrect_mac_from_win(rect)];
+         [view setNeedsDisplayInRect:NSRectFromCGRect(cgrect_mac_from_win(dirty))];
+ 
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -482,6 +482,7 @@
+ struct macdrv_window_state {
+     unsigned int    disabled:1;
+     unsigned int    no_foreground:1;
++    unsigned int    ignores_mouse_events:1;
+     unsigned int    floating:1;
+     unsigned int    excluded_by_expose:1;
+     unsigned int    excluded_by_cycle:1;
+@@ -508,7 +509,23 @@
+ extern void macdrv_set_cocoa_window_frame(macdrv_window w, const CGRect* new_frame);
+ extern void macdrv_get_cocoa_window_frame(macdrv_window w, CGRect* out_frame);
+ extern void macdrv_set_cocoa_parent_window(macdrv_window w, macdrv_window parent);
+-extern void macdrv_window_set_color_image(macdrv_window w, CGImageRef image, CGRect rect, CGRect dirty);
++struct macdrv_altium_pan_frame
++{
++    CGRect viewport;
++    CGPoint anchor;
++    uint64_t sequence;
++};
++extern void macdrv_altium_pan_note_copy(const void *bits, int stride, CGRect viewport, CGPoint anchor);
++extern void macdrv_altium_pan_get_frame(const void *bits, struct macdrv_altium_pan_frame *frame);
++#ifdef __OBJC__
++extern void macdrv_altium_pan_set_frame(id view, const struct macdrv_altium_pan_frame *frame);
++extern void macdrv_altium_pan_draw(id view);
++extern void macdrv_altium_pan_cancel_view(id view);
++extern void macdrv_altium_pan_event(id event);
++extern int macdrv_altium_pan_preview_active(void);
++#endif
++extern void macdrv_window_set_color_image(macdrv_window w, CGImageRef image, CGRect rect, CGRect dirty,
++                                         const struct macdrv_altium_pan_frame *frame);
+ extern void macdrv_window_set_shape_image(macdrv_window w, CGImageRef image);
+ extern void macdrv_set_window_shape(macdrv_window w, const CGRect *rects, int count);
+ extern void macdrv_set_window_alpha(macdrv_window w, CGFloat alpha);
+--- a/dlls/winemac.drv/mouse.c
++++ b/dlls/winemac.drv/mouse.c
+@@ -945,9 +945,11 @@
+           event->mouse_button.x, event->mouse_button.y,
+           event->mouse_button.time_ms, (NtGetTickCount() - event->mouse_button.time_ms));
+ 
++    /* Cocoa can finish raising a clicked disabled owner after the down has
++     * been handled. Restore its blocking dialog on release as well. */
++    activate_blocking_popup(hwnd);
+     if (event->mouse_button.pressed)
+     {
+-        activate_blocking_popup(hwnd);
+         switch (event->mouse_button.button)
+         {
+         case 0: flags |= MOUSEEVENTF_LEFTDOWN; break;
+--- /dev/null
++++ b/dlls/winemac.drv/native_gdi_client.h
+@@ -0,0 +1,93 @@
++/*
++ * Native GDI copy worker for Altium Designer 17 on macOS.
++ *
++ * Copyright 2026 lazy-jubei
++ * Leading dib_info layout: Copyright 2011 Huw Davies.
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++ * Lesser General Public License for more details.
++ */
++
++#include "native_gdi_protocol.h"
++#include <spawn.h>
++#include <pthread.h>
++#include <sys/wait.h>
++#include <signal.h>
++#include <errno.h>
++static mach_port_t arm_server,arm_reply;static pid_t arm_pid;static int arm_dead;
++static pthread_mutex_t arm_mutex=PTHREAD_MUTEX_INITIALIZER;
++struct arm_entry {uintptr_t lo;size_t size;mach_port_t port;uint64_t stamp;};
++static struct arm_entry arm_entries[4];static uint64_t arm_stamp;
++static void arm_stop_worker(int sig)
++{
++    if (arm_pid > 0 && waitpid(arm_pid, NULL, WNOHANG) == 0)
++    {
++        kill(arm_pid, sig);
++        while (waitpid(arm_pid, NULL, 0) < 0 && errno == EINTR) {}
++    }
++    arm_pid = 0;
++}
++static int arm_start(void){
++ if(arm_dead)return 0;if(arm_server)return 1;
++ const char *path=native_worker_path[0]?native_worker_path:NULL;if(!path){arm_dead=1;return 0;}
++ char name[100],pidstr[32];snprintf(name,sizeof(name),"com.lazyjubei.ad17.copy.%d.%08x",getpid(),arc4random());snprintf(pidstr,sizeof(pidstr),"%d",getpid());
++ if(mach_port_allocate(mach_task_self(),MACH_PORT_RIGHT_RECEIVE,&arm_reply)){arm_dead=1;return 0;}
++ mach_port_insert_right(mach_task_self(),arm_reply,arm_reply,MACH_MSG_TYPE_MAKE_SEND);
++ if(bootstrap_register(bootstrap_port,name,arm_reply)){arm_dead=1;return 0;}
++ char *args[]={(char*)path,name,pidstr,NULL};char path_env[]="PATH=/usr/bin:/bin";char *env[]={path_env,NULL};
++ int err=posix_spawn(&arm_pid,path,NULL,NULL,args,env);if(err)arm_pid=0;
++ struct {struct arm_copy_reply r;char trailer[512];} hello;memset(&hello,0,sizeof(hello));
++ kern_return_t kr=err?err:mach_msg(&hello.r.hdr,MACH_RCV_MSG|MACH_RCV_TIMEOUT|MACH_RCV_TRAILER_TYPE(MACH_MSG_TRAILER_FORMAT_0)|MACH_RCV_TRAILER_ELEMENTS(MACH_RCV_TRAILER_AUDIT),0,sizeof(hello),arm_reply,3000,0);
++ kern_return_t deregister=bootstrap_register(bootstrap_port,name,MACH_PORT_NULL);(void)deregister;
++ mach_msg_audit_trailer_t *audit=(void*)((char*)&hello+round_msg(hello.r.hdr.msgh_size));
++ if(kr||hello.r.hdr.msgh_size!=sizeof(hello.r)||audit->msgh_trailer_size<sizeof(*audit)||audit->msgh_audit.val[5]!=(uint32_t)arm_pid||hello.r.hdr.msgh_id!=1700||!hello.r.ok){fprintf(stderr,"ARM_COPY startup failed %d/%d\n",err,kr);arm_dead=1;arm_stop_worker(SIGKILL);return 0;}
++ arm_server=hello.r.hdr.msgh_remote_port;fprintf(stderr,"ARM_COPY native worker pid=%d for Wine pid=%d\n",arm_pid,getpid());return 1;
++}
++static mach_port_t arm_entry_for(uint8_t *ptr,int stride,int w,int h,uint64_t *size,uint64_t *offset){
++ int64_t delta=(int64_t)(h-1)*stride;uintptr_t lo=(uintptr_t)ptr+(delta<0?delta:0),hi=(uintptr_t)ptr+(delta>0?delta:0)+(size_t)w*4;
++ uintptr_t aligned=lo&~(uintptr_t)16383;size_t length=((hi+16383)&~(uintptr_t)16383)-aligned;
++ if(length>268435456||hi<lo)return 0;
++ int slot=-1;uint64_t oldest=UINT64_MAX;
++ for(int i=0;i<4;i++){
++  if(arm_entries[i].port&&arm_entries[i].lo==aligned&&arm_entries[i].size==length){slot=i;break;}
++  if(!arm_entries[i].port){slot=i;oldest=0;}else if(oldest&&arm_entries[i].stamp<oldest){oldest=arm_entries[i].stamp;slot=i;}
++ }
++ struct arm_entry *e=&arm_entries[slot];mach_port_t parent=(e->lo==aligned&&e->size==length)?e->port:0,entry=0;
++ memory_object_size_t len=length;vm_prot_t permission=VM_PROT_READ|VM_PROT_WRITE|(parent?MAP_MEM_NAMED_REUSE:0);
++ kern_return_t kr=mach_make_memory_entry_64(mach_task_self(),&len,aligned,permission,&entry,parent);
++ if(kr||len<hi-aligned){if(entry)mach_port_deallocate(mach_task_self(),entry);return 0;}
++ if(e->port)mach_port_deallocate(mach_task_self(),e->port);
++ *e=(struct arm_entry){aligned,length,entry,++arm_stamp};*size=len;*offset=(uintptr_t)ptr-aligned;return entry;
++}
++static int arm_copy(uint8_t *dp,const uint8_t *sp,int ds,int ss,int w,int h,int mode,int workers,uint64_t *worker_ns){
++ int ok=0;pthread_mutex_lock(&arm_mutex);if(!arm_start())goto done;
++ struct arm_copy_request r;memset(&r,0,sizeof(r));r.w=w;r.h=h;r.ds=ds;r.ss=ss;r.mode=mode;r.workers=workers;
++ mach_port_t se=arm_entry_for((uint8_t*)sp,ss,w,h,&r.sizes[0],&r.offsets[0]),de=arm_entry_for(dp,ds,w,h,&r.sizes[1],&r.offsets[1]);
++ if(!se||!de)goto done;
++ r.hdr=(mach_msg_header_t){.msgh_bits=MACH_MSGH_BITS_COMPLEX|MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND,MACH_MSG_TYPE_MAKE_SEND_ONCE),.msgh_size=sizeof(r),.msgh_remote_port=arm_server,.msgh_local_port=arm_reply,.msgh_id=1701};r.body.msgh_descriptor_count=2;
++ for(int i=0;i<2;i++){r.ports[i].name=i?de:se;r.ports[i].disposition=MACH_MSG_TYPE_COPY_SEND;r.ports[i].type=MACH_MSG_PORT_DESCRIPTOR;}
++ kern_return_t kr=mach_msg(&r.hdr,MACH_SEND_MSG|MACH_SEND_TIMEOUT,r.hdr.msgh_size,0,0,1000,0);
++ struct {struct arm_copy_reply r;char trailer[512];} reply;memset(&reply,0,sizeof(reply));
++ if(!kr)kr=mach_msg(&reply.r.hdr,MACH_RCV_MSG|MACH_RCV_TIMEOUT|MACH_RCV_TRAILER_TYPE(MACH_MSG_TRAILER_FORMAT_0)|MACH_RCV_TRAILER_ELEMENTS(MACH_RCV_TRAILER_AUDIT),0,sizeof(reply),arm_reply,5000,0);
++ mach_msg_audit_trailer_t *audit=(void*)((char*)&reply+round_msg(reply.r.hdr.msgh_size));
++ if(!kr&&(reply.r.hdr.msgh_size!=sizeof(reply.r)||audit->msgh_trailer_size<sizeof(*audit)||audit->msgh_audit.val[5]!=(uint32_t)arm_pid))kr=KERN_FAILURE;
++ if(kr){fprintf(stderr,"ARM_COPY stopped after IPC error %d\n",kr);arm_dead=1;arm_stop_worker(SIGKILL);arm_server=0;goto done;}
++ ok=reply.r.hdr.msgh_id==1702&&reply.r.ok;if(worker_ns)*worker_ns=reply.r.ns;
++ done:pthread_mutex_unlock(&arm_mutex);return ok;
++}
++
++static void altium_native_shutdown(void){
++ pthread_mutex_lock(&arm_mutex);
++ arm_stop_worker(SIGTERM);
++ for(int i=0;i<4;i++)if(arm_entries[i].port)mach_port_deallocate(mach_task_self(),arm_entries[i].port);
++ if(arm_server)mach_port_deallocate(mach_task_self(),arm_server);
++ if(arm_reply){mach_port_deallocate(mach_task_self(),arm_reply);mach_port_mod_refs(mach_task_self(),arm_reply,MACH_PORT_RIGHT_RECEIVE,-1);}
++ pthread_mutex_unlock(&arm_mutex);
++}
+--- /dev/null
++++ b/dlls/winemac.drv/native_gdi_protocol.h
+@@ -0,0 +1,33 @@
++/*
++ * Native GDI copy worker for Altium Designer 17 on macOS.
++ *
++ * Copyright 2026 lazy-jubei
++ * Leading dib_info layout: Copyright 2011 Huw Davies.
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++ * Lesser General Public License for more details.
++ */
++
++#ifndef ALTIUM_NATIVE_GDI_PROTOCOL_H
++#define ALTIUM_NATIVE_GDI_PROTOCOL_H
++/* Private synchronous native bitmap-copy experiment. */
++#include <mach/mach.h>
++#include <mach/mach_vm.h>
++#include <mach/vm_map.h>
++#include <servers/bootstrap.h>
++#include <stdint.h>
++struct arm_copy_request {
++ mach_msg_header_t hdr;mach_msg_body_t body;mach_msg_port_descriptor_t ports[2];
++ uint64_t sizes[2],offsets[2];int32_t w,h,ss,ds,mode,workers;
++};
++struct arm_copy_reply {mach_msg_header_t hdr;uint32_t ok,pad;uint64_t ns;};
++struct arm_copy_receive {struct arm_copy_request req;char trailer[512];};
++
++#endif
+--- /dev/null
++++ b/dlls/winemac.drv/native_gdi_worker.c
+@@ -0,0 +1,89 @@
++/*
++ * Native GDI copy worker for Altium Designer 17 on macOS.
++ *
++ * Copyright 2026 lazy-jubei
++ * Leading dib_info layout: Copyright 2011 Huw Davies.
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++ * Lesser General Public License for more details.
++ */
++
++#include "native_gdi_protocol.h"
++#include <dispatch/dispatch.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <signal.h>
++#include <time.h>
++#include <pthread.h>
++static uint64_t now_ns(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC_RAW,&t);return(uint64_t)t.tv_sec*1000000000+t.tv_nsec;}
++struct work {uint8_t *s,*d;int ss,ds,w,h,workers,mode;};
++static void rows(void *ctx,size_t idx){struct work *a=ctx;int y0=a->h*idx/a->workers,y1=a->h*(idx+1)/a->workers;
++ for(int y=y0;y<y1;y++){
++  const uint8_t *s=a->s+(int64_t)y*a->ss;uint8_t *d=a->d+(int64_t)y*a->ds;size_t n=(size_t)a->w*4;
++  memcpy(d,s,n);
++ }
++}
++struct mapping {mach_port_t port;mach_vm_address_t addr;mach_vm_size_t size;uint64_t stamp;int writable;};
++static struct mapping cache[4];static uint64_t stamp;
++static mach_vm_address_t mapped(mach_port_t port,uint64_t size,int writable){
++ int slot=-1;uint64_t oldest=UINT64_MAX;
++ for(int i=0;i<4;i++){
++  if(cache[i].port==port&&cache[i].size>=size){
++   mach_port_deallocate(mach_task_self(),port);
++   /* A previous source may become the destination of a later copy. */
++   if(writable&&!cache[i].writable){
++    if(mach_vm_protect(mach_task_self(),cache[i].addr,cache[i].size,FALSE,VM_PROT_READ|VM_PROT_WRITE))return 0;
++    cache[i].writable=1;
++   }
++   cache[i].stamp=++stamp;return cache[i].addr;
++  }
++  if(!cache[i].port){slot=i;oldest=0;}else if(oldest&&cache[i].stamp<oldest){oldest=cache[i].stamp;slot=i;}
++ }
++ struct mapping *m=&cache[slot];if(m->port){mach_vm_deallocate(mach_task_self(),m->addr,m->size);mach_port_deallocate(mach_task_self(),m->port);memset(m,0,sizeof(*m));}
++ mach_vm_address_t addr=0;vm_prot_t prot=VM_PROT_READ|(writable?VM_PROT_WRITE:0);
++ if(mach_vm_map(mach_task_self(),&addr,size,0,VM_FLAGS_ANYWHERE,port,0,FALSE,prot,VM_PROT_READ|VM_PROT_WRITE,VM_INHERIT_NONE)){mach_port_deallocate(mach_task_self(),port);return 0;}
++ *m=(struct mapping){port,addr,size,++stamp,writable};return addr;
++}
++int main(int argc,char **argv){
++ if(argc!=3)return 2;pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE,0);pid_t parent=atoi(argv[2]);mach_port_t destination=0,server=0;
++ if(bootstrap_look_up(bootstrap_port,argv[1],&destination))return 3;
++ mach_port_allocate(mach_task_self(),MACH_PORT_RIGHT_RECEIVE,&server);
++ struct arm_copy_reply hello={.hdr={.msgh_bits=MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND,MACH_MSG_TYPE_MAKE_SEND),.msgh_size=sizeof(hello),.msgh_remote_port=destination,.msgh_local_port=server,.msgh_id=1700},.ok=1};
++ if(mach_msg(&hello.hdr,MACH_SEND_MSG,hello.hdr.msgh_size,0,0,0,0))return 4;
++ mach_port_deallocate(mach_task_self(),destination);
++ for(;;){
++  struct arm_copy_receive msg;memset(&msg,0,sizeof(msg));
++  kern_return_t kr=mach_msg(&msg.req.hdr,MACH_RCV_MSG|MACH_RCV_TIMEOUT,0,sizeof(msg),server,5000,0);
++  if(kr==MACH_RCV_TIMED_OUT){if(getppid()!=parent||kill(parent,0))break;continue;}if(kr)break;
++  struct arm_copy_request *r=&msg.req;uint64_t t=now_ns();uint32_t ok=0;
++  int valid=r->hdr.msgh_size==sizeof(*r)&&(r->hdr.msgh_bits&MACH_MSGH_BITS_COMPLEX)&&r->body.msgh_descriptor_count==2&&r->hdr.msgh_id==1701&&r->w>0&&r->h>0&&r->w<20000&&r->h<20000;
++ for(int i=0;valid&&i<2;i++){
++  int stride=i?r->ds:r->ss;int64_t first=r->offsets[i],last=first+(int64_t)(r->h-1)*stride;
++  int64_t lo=first<last?first:last,hi=(first>last?first:last)+(int64_t)r->w*4;
++  valid=r->ports[i].type==MACH_MSG_PORT_DESCRIPTOR&&r->sizes[i]>0&&r->sizes[i]<=268435456&&lo>=0&&hi>=lo&&(uint64_t)hi<=r->sizes[i];
++ }
++ if(valid){
++   mach_vm_address_t sa=mapped(r->ports[0].name,r->sizes[0],0),da=mapped(r->ports[1].name,r->sizes[1],1);
++   if(sa&&da){struct work a={(uint8_t*)sa+r->offsets[0],(uint8_t*)da+r->offsets[1],r->ss,r->ds,r->w,r->h,r->workers,r->mode};
++    if(a.workers<1||a.workers>8)a.workers=1;
++    if(a.workers==1)rows(&a,0);else dispatch_apply_f(a.workers,dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE,0),&a,rows);ok=1;
++   }
++  }
++  else if((r->hdr.msgh_bits&MACH_MSGH_BITS_COMPLEX)&&r->body.msgh_descriptor_count==2){
++   for(int i=0;i<2;i++)if(r->ports[i].type==MACH_MSG_PORT_DESCRIPTOR)
++    mach_port_deallocate(mach_task_self(),r->ports[i].name);
++  }
++  struct arm_copy_reply reply={.hdr={.msgh_bits=MACH_MSGH_BITS(MACH_MSG_TYPE_MOVE_SEND_ONCE,0),.msgh_size=sizeof(reply),.msgh_remote_port=r->hdr.msgh_remote_port,.msgh_id=1702},.ok=ok,.ns=now_ns()-t};
++  if(mach_msg(&reply.hdr,MACH_SEND_MSG,reply.hdr.msgh_size,0,0,0,0))break;
++ }
++ return 0;
++}
+--- a/dlls/winemac.drv/surface.c
++++ b/dlls/winemac.drv/surface.c
+@@ -86,6 +86,7 @@
+     CGColorSpaceRef colorspace;
+     CGImageRef image;
+     struct macdrv_win_data *data;
++    struct macdrv_altium_pan_frame pan_frame;
+ 
+     colorspace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+     image = CGImageCreate(color_info->bmiHeader.biWidth, abs(color_info->bmiHeader.biHeight), 8, 32,
+@@ -93,7 +94,8 @@
+                           alpha_info | kCGBitmapByteOrder32Little, surface->provider, NULL, retina_on, kCGRenderingIntentDefault);
+     CGColorSpaceRelease(colorspace);
+ 
+-    macdrv_window_set_color_image(surface->window, image, cgrect_from_rect(*rect), cgrect_from_rect(*dirty));
++    macdrv_altium_pan_get_frame(color_bits, &pan_frame);
++    macdrv_window_set_color_image(surface->window, image, cgrect_from_rect(*rect), cgrect_from_rect(*dirty), &pan_frame);
+     CGImageRelease(image);
+ 
+     if (shape_changed)
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -88,14 +88,26 @@
+ /***********************************************************************
+  *              get_cocoa_window_features
+  */
++static BOOL is_altium_hint(HWND hwnd)
++{
++    const WCHAR *image = RtlGetCurrentPeb()->ProcessParameters->ImagePathName.Buffer;
++    const WCHAR *base = wcsrchr(image, '\\');
++    WCHAR buffer[64] = {0};
++    UNICODE_STRING name = {0, sizeof(buffer), buffer};
++
++    if (wcsicmp(base ? base + 1 : image, u"DXP.EXE")) return FALSE;
++    NtUserGetClassName(hwnd, FALSE, &name);
++    return !wcscmp(buffer, u"TGoldenHintForm");
++}
++
+ static struct macdrv_window_features get_cocoa_window_features(struct macdrv_win_data *data, DWORD style, DWORD ex_style)
+ {
+     struct macdrv_window_features wf = {0};
+ 
+-    if (ex_style & WS_EX_NOACTIVATE) wf.prevents_app_activation = TRUE;
+-    if (EqualRect(&data->rects.window, &data->rects.visible)) return wf;
+-
+-    return get_window_features_for_style(style, ex_style, data->shaped);
++    if (!EqualRect(&data->rects.window, &data->rects.visible))
++        wf = get_window_features_for_style(style, ex_style, data->shaped);
++    if ((ex_style & WS_EX_NOACTIVATE) || is_altium_hint(data->hwnd)) wf.prevents_app_activation = TRUE;
++    return wf;
+ }
+ 
+ 
+@@ -126,12 +138,19 @@
+     memset(state, 0, sizeof(*state));
+     state->disabled = (style & WS_DISABLED) != 0;
+     state->no_foreground = !can_window_become_foreground(data->hwnd);
++    if (is_altium_hint(data->hwnd))
++    {
++        state->no_foreground = TRUE;
++        state->ignores_mouse_events = TRUE;
++    }
+     state->floating = (ex_style & WS_EX_TOPMOST) != 0;
+     state->excluded_by_expose = state->excluded_by_cycle =
+         (!(ex_style & WS_EX_APPWINDOW) &&
+          (NtUserGetWindowRelative(data->hwnd, GW_OWNER) || (ex_style & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE))));
+     if (IsRectEmpty(&data->rects.window))
+         state->excluded_by_expose = TRUE;
++    if (state->ignores_mouse_events)
++        state->excluded_by_expose = state->excluded_by_cycle = TRUE;
+     state->minimized = (style & WS_MINIMIZE) != 0;
+     state->minimized_valid = state->minimized != data->minimized;
+     state->maximized = (style & WS_MAXIMIZE) != 0;
+@@ -1990,11 +2009,12 @@
+     NtUserSetWindowPos(popup, HWND_TOP, 0, 0, 0, 0,
+             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+     NtUserSetForegroundWindowInternal(popup);
+-    /* Cocoa orders owned windows as a group. Raise the disabled root owner
+-     * first so the group clears a separately owned main form. */
++    /* Cocoa orders visible owned windows as a group. Leave hidden roots
++     * hidden: showing Delphi's zero-sized TApplication would attach the
++     * dialog to an invisible native root and defeat later relative ordering. */
+     if (owner && owner != popup && (data = get_win_data(owner)))
+     {
+-        if (data->cocoa_window)
++        if (data->cocoa_window && data->on_screen && !IsRectEmpty(&data->rects.visible))
+             macdrv_order_cocoa_window(data->cocoa_window, NULL, NULL, FALSE);
+         release_win_data(data);
+     }

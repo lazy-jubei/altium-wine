@@ -1,0 +1,81 @@
+From: Altium Wine kit contributors
+Subject: [PATCH] wined3d: Queue AD17 immediate-draw streaming uploads
+
+Opt-in with ALTIUM_D3D9_QUEUED_UP=1. Use owned upload snapshots for
+DrawPrimitiveUP/DrawIndexedPrimitiveUP streaming data, preserving ring
+alignment, growth, wraps and draw ordering. Other applications keep the
+synchronous mapping path. Requires patch 0019 for OpenGL upload hints.
+
+--- a/dlls/wined3d/buffer.c
++++ b/dlls/wined3d/buffer.c
+@@ -1441,6 +1441,40 @@
+     void *dst_data;
+     HRESULT hr;
+ 
++    if (wined3d_settings.altium_queued_up && wined3d_get_renderer() == WINED3D_RENDERER_OPENGL
++            && data && size && stride && size <= 4 * 1024 * 1024)
++    {
++        struct wined3d_resource *resource;
++        unsigned int pos, align, flags;
++        struct wined3d_box box;
++
++        if (FAILED(hr = wined3d_streaming_buffer_prepare(device, buffer, size)))
++            return hr;
++        resource = &buffer->buffer->resource;
++        pos = buffer->pos;
++        align = pos % stride;
++        if (align)
++            align = stride - align;
++        flags = WINED3D_UPDATE_ALTIUM_BUFFER_HINTS | WINED3D_MAP_NOOVERWRITE;
++        if (pos > resource->size || align > resource->size - pos
++                || size > resource->size - pos - align)
++        {
++            pos = 0;
++            flags = WINED3D_UPDATE_ALTIUM_BUFFER_HINTS | WINED3D_MAP_DISCARD;
++        }
++        else
++            pos += align;
++
++        /* UpdateSubResource owns a copy of the caller's data until the queued
++         * upload executes. The ring retains its alignment and wrap guarantees;
++         * uploads and draws stay ordered on the default command queue. */
++        wined3d_box_set(&box, pos, 0, pos + size, 1, 0, 1);
++        wined3d_device_context_update_sub_resource(&device->cs->c, resource, 0, &box, data, 0, 0, flags);
++        buffer->pos = pos + size;
++        *ret_pos = pos;
++        return WINED3D_OK;
++    }
++
+     if (SUCCEEDED(hr = wined3d_streaming_buffer_map(device, buffer, size, stride, ret_pos, &dst_data)))
+     {
+         memcpy(dst_data, data, size);
+--- a/dlls/wined3d/wined3d_main.c
++++ b/dlls/wined3d/wined3d_main.c
+@@ -120,6 +120,7 @@
+     .pci_vendor_id = PCI_VENDOR_NONE,
+     .pci_device_id = PCI_DEVICE_NONE,
+     .multisample_textures = TRUE,
++    .altium_queued_up = false,
+     .sample_count = ~0u,
+     .max_sm_vs = UINT_MAX,
+     .max_sm_ps = UINT_MAX,
+@@ -339,6 +340,9 @@
+      *
+      *     WINE_D3D_CONFIG=csmt=0x1,shader_backend=glsl
+      */
++    wined3d_settings.altium_queued_up = getenv("ALTIUM_D3D9_QUEUED_UP")
++            && !strcmp(getenv("ALTIUM_D3D9_QUEUED_UP"), "1");
++
+     env = getenv("WINE_D3D_CONFIG");
+ 
+     if (hkey || appkey || env)
+--- a/dlls/wined3d/wined3d_private.h
++++ b/dlls/wined3d/wined3d_private.h
+@@ -494,6 +494,7 @@
+     bool check_float_constants;
+     bool cb_access_map_w;
+     bool ffp_hlsl;
++    bool altium_queued_up;
+ };
+ 
+ extern struct wined3d_settings wined3d_settings;

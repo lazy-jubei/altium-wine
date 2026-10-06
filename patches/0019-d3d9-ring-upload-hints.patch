@@ -1,0 +1,293 @@
+From: Altium Wine kit contributors
+Subject: [PATCH] d3d9/wined3d: Preserve dynamic ring upload hints
+
+Opt-in with ALTIUM_D3D9_UPLOAD_HINTS=1 alongside ALTIUM_D3D9_UPLOADS=1.
+Keep queued upload snapshots and their ordering with draws. Preserve DISCARD
+and NOOVERWRITE guarantees, mapping only the written NOOVERWRITE range on
+nonpersistent OpenGL buffers. Other applications keep the ordinary path.
+
+--- a/include/wine/wined3d.h
++++ b/include/wine/wined3d.h
+@@ -978,6 +978,8 @@
+ #define WINED3DUSAGE_QUERY_MASK                                 0x003f8400
+ 
+ #define WINED3D_MAP_NOSYSLOCK                                   0x00000800
++#define WINED3D_UPDATE_ALTIUM_BUFFER_HINTS                      0x80000000u
++
+ #define WINED3D_MAP_NOOVERWRITE                                 0x00001000
+ #define WINED3D_MAP_DISCARD                                     0x00002000
+ #define WINED3D_MAP_DONOTWAIT                                   0x00004000
+--- a/dlls/d3d9/buffer.c
++++ b/dlls/d3d9/buffer.c
+@@ -34,7 +34,7 @@
+         DWORD flags, void **data)
+ {
+     struct wined3d_resource_desc desc;
+-    struct wined3d_box *ranges;
++    struct d3d9_shadow_range *ranges;
+     unsigned int capacity;
+ 
+     if (!device->altium_uploads || system_memory || map->legacy_locks
+@@ -62,7 +62,9 @@
+ 
+     /* Keep disjoint ranges separate: uploading gaps would overwrite valid data.
+      * Nested locks share CPU storage and commit only after the last Unlock. */
+-    wined3d_box_set(&map->ranges[map->range_count++], offset, 0, offset + size, 1, 0, 1);
++    map->ranges[map->range_count].flags = flags;
++    wined3d_box_set(&map->ranges[map->range_count++].box, offset, 0, offset + size, 1, 0, 1);
++    if (flags & D3DLOCK_DISCARD) map->discard = true;
+     ++map->pending_locks;
+     *data = (BYTE *)map->data + offset;
+     return D3D_OK;
+@@ -77,11 +79,21 @@
+         return;
+     for (i = 0; i < map->range_count; ++i)
+     {
+-        const struct wined3d_box *box = &map->ranges[i];
++        const struct wined3d_box *box = &map->ranges[i].box;
++        unsigned int hints = 0;
++        if (device->altium_upload_hints)
++        {
++            /* Nested writes commit together: discard once before all ranges,
++             * then the fresh store cannot be referenced by an intervening draw. */
++            if (map->discard) hints = i ? WINED3D_MAP_NOOVERWRITE : WINED3D_MAP_DISCARD;
++            else if (map->ranges[i].flags & D3DLOCK_NOOVERWRITE) hints = WINED3D_MAP_NOOVERWRITE;
++            if (hints) hints |= WINED3D_UPDATE_ALTIUM_BUFFER_HINTS;
++        }
+         wined3d_device_context_update_sub_resource(device->immediate_context,
+-                wined3d_buffer_get_resource(buffer), 0, box, (BYTE *)map->data + box->left, 0, 0, 0);
++                wined3d_buffer_get_resource(buffer), 0, box, (BYTE *)map->data + box->left, 0, 0, hints);
+     }
+     map->range_count = 0;
++    map->discard = false;
+ }
+ 
+ static inline struct d3d9_vertexbuffer *impl_from_IDirect3DVertexBuffer9(IDirect3DVertexBuffer9 *iface)
+--- a/dlls/d3d9/device.c
++++ b/dlls/d3d9/device.c
+@@ -4826,6 +4826,8 @@
+     device->refcount = 1;
+     device->altium_uploads = GetEnvironmentVariableW(L"ALTIUM_D3D9_UPLOADS", upload_option,
+             ARRAY_SIZE(upload_option)) == 1 && upload_option[0] == '1';
++    device->altium_upload_hints = GetEnvironmentVariableW(L"ALTIUM_D3D9_UPLOAD_HINTS", upload_option,
++            ARRAY_SIZE(upload_option)) == 1 && upload_option[0] == '1';
+ 
+     if (!(flags & D3DCREATE_FPU_PRESERVE)) setup_fpu();
+ 
+--- a/dlls/d3d9/d3d9_private.h
++++ b/dlls/d3d9/d3d9_private.h
+@@ -111,7 +111,8 @@
+     DWORD in_destruction : 1;
+     DWORD in_scene : 1;
+     DWORD altium_uploads : 1;
+-    DWORD padding : 12;
++    DWORD altium_upload_hints : 1;
++    DWORD padding : 11;
+ 
+     DWORD auto_mipmaps; /* D3D9_MAX_TEXTURE_UNITS */
+ 
+@@ -190,11 +191,18 @@
+ struct d3d9_surface *unsafe_impl_from_IDirect3DSurface9(IDirect3DSurface9 *iface);
+ 
+ /* CPU write staging for the opt-in AD17 dynamic-buffer path. */
++struct d3d9_shadow_range
++{
++    struct wined3d_box box;
++    DWORD flags;
++};
++
+ struct d3d9_shadow_map
+ {
+     void *data;
+-    struct wined3d_box *ranges;
++    struct d3d9_shadow_range *ranges;
+     unsigned int range_count, range_capacity, pending_locks, legacy_locks;
++    bool discard;
+ };
+ 
+ struct d3d9_vertexbuffer
+--- a/dlls/wined3d/buffer.c
++++ b/dlls/wined3d/buffer.c
+@@ -787,10 +787,9 @@
+     wined3d_context_copy_bo_address(context, &dst, &src, 1, &range, WINED3D_MAP_WRITE | WINED3D_MAP_DISCARD);
+ }
+ 
+-void wined3d_buffer_copy_bo_address(struct wined3d_buffer *dst_buffer, struct wined3d_context *context,
+-        unsigned int dst_offset, const struct wined3d_const_bo_address *src_addr, unsigned int size)
+-{
+-    uint32_t map_flags = WINED3D_MAP_WRITE;
++static void buffer_copy_bo_address(struct wined3d_buffer *dst_buffer, struct wined3d_context *context,
++        unsigned int dst_offset, const struct wined3d_const_bo_address *src_addr, unsigned int size, uint32_t map_flags)
++{
+     struct wined3d_bo_address dst_addr;
+     struct wined3d_range range;
+     DWORD dst_location;
+@@ -808,6 +807,12 @@
+     range.size = size;
+     wined3d_context_copy_bo_address(context, &dst_addr, (const struct wined3d_bo_address *)src_addr, 1, &range, map_flags);
+     wined3d_buffer_invalidate_range(dst_buffer, ~dst_location, dst_offset, size);
++}
++
++void wined3d_buffer_copy_bo_address(struct wined3d_buffer *dst_buffer, struct wined3d_context *context,
++        unsigned int dst_offset, const struct wined3d_const_bo_address *src_addr, unsigned int size)
++{
++    buffer_copy_bo_address(dst_buffer, context, dst_offset, src_addr, size, WINED3D_MAP_WRITE);
+ }
+ 
+ void wined3d_buffer_copy(struct wined3d_buffer *dst_buffer, unsigned int dst_offset,
+@@ -878,7 +883,10 @@
+     }
+     else
+     {
+-        wined3d_buffer_copy_bo_address(buffer, context, offset, &upload_bo->addr, size);
++        uint32_t map_flags = WINED3D_MAP_WRITE;
++        if (flags & UPLOAD_BO_ALTIUM_DISCARD) map_flags |= WINED3D_MAP_DISCARD;
++        else if (flags & UPLOAD_BO_ALTIUM_NOOVERWRITE) map_flags |= WINED3D_MAP_NOOVERWRITE;
++        buffer_copy_bo_address(buffer, context, offset, &upload_bo->addr, size, map_flags);
+     }
+ }
+ 
+--- a/dlls/wined3d/cs.c
++++ b/dlls/wined3d/cs.c
+@@ -2755,9 +2755,9 @@
+     }
+ }
+ 
+-void wined3d_device_context_emit_update_sub_resource(struct wined3d_device_context *context,
++void wined3d_device_context_emit_buffer_upload(struct wined3d_device_context *context,
+         struct wined3d_resource *resource, unsigned int sub_resource_idx, const struct wined3d_box *box,
+-        const void *data, unsigned int row_pitch, unsigned int slice_pitch)
++        const void *data, unsigned int row_pitch, unsigned int slice_pitch, unsigned int upload_flags)
+ {
+     struct wined3d_cs_update_sub_resource *op;
+     struct wined3d_map_desc map_desc;
+@@ -2794,6 +2794,7 @@
+                     map_desc.slice_pitch, box->right - box->left, box->bottom - box->top, box->back - box->front);
+         }
+         context->ops->unmap_upload_bo(context, resource, sub_resource_idx, &dummy_box, &bo);
++        bo.flags |= upload_flags;
+         wined3d_device_context_upload_bo(context, resource, sub_resource_idx,
+                 box, &bo, map_desc.row_pitch, map_desc.slice_pitch);
+         return;
+@@ -2808,7 +2809,7 @@
+     op->box = *box;
+     op->bo.addr.buffer_object = 0;
+     op->bo.addr.addr = data;
+-    op->bo.flags = 0;
++    op->bo.flags = upload_flags;
+     op->row_pitch = row_pitch;
+     op->slice_pitch = slice_pitch;
+ 
+@@ -2816,6 +2817,14 @@
+     /* The data pointer may go away, so we need to wait until it is read.
+      * Copying the data may be faster if it's small. */
+     wined3d_device_context_finish(context, WINED3D_CS_QUEUE_MAP);
++}
++
++void wined3d_device_context_emit_update_sub_resource(struct wined3d_device_context *context,
++        struct wined3d_resource *resource, unsigned int sub_resource_idx, const struct wined3d_box *box,
++        const void *data, unsigned int row_pitch, unsigned int slice_pitch)
++{
++    wined3d_device_context_emit_buffer_upload(context, resource, sub_resource_idx,
++            box, data, row_pitch, slice_pitch, 0);
+ }
+ 
+ static void wined3d_cs_exec_add_dirty_texture_region(struct wined3d_cs *cs, const void *data)
+--- a/dlls/wined3d/device.c
++++ b/dlls/wined3d/device.c
+@@ -4396,10 +4396,23 @@
+ {
+     struct wined3d_sub_resource_desc desc;
+     struct wined3d_box b;
++    unsigned int upload_flags = 0;
+ 
+     TRACE("context %p, resource %p, sub_resource_idx %u, box %s, data %p, row_pitch %u, depth_pitch %u, flags %#x.\n",
+             context, resource, sub_resource_idx, debug_box(box), data, row_pitch, depth_pitch, flags);
+ 
++    /* Private D3D9 opt-in: retain the application's dynamic-ring guarantees.
++     * The ordinary UpdateSubResource and other renderers keep their old path. */
++    if (flags & WINED3D_UPDATE_ALTIUM_BUFFER_HINTS)
++    {
++        if (resource->type == WINED3D_RTYPE_BUFFER && (resource->usage & WINED3DUSAGE_DYNAMIC)
++                && wined3d_get_renderer() == WINED3D_RENDERER_OPENGL)
++        {
++            if (flags & WINED3D_MAP_DISCARD) upload_flags |= UPLOAD_BO_ALTIUM_DISCARD;
++            else if (flags & WINED3D_MAP_NOOVERWRITE) upload_flags |= UPLOAD_BO_ALTIUM_NOOVERWRITE;
++        }
++        flags &= ~(WINED3D_UPDATE_ALTIUM_BUFFER_HINTS | WINED3D_MAP_DISCARD | WINED3D_MAP_NOOVERWRITE);
++    }
+     if (flags)
+         FIXME("Ignoring flags %#x.\n", flags);
+ 
+@@ -4432,8 +4445,8 @@
+     }
+ 
+     wined3d_device_context_lock(context);
+-    wined3d_device_context_emit_update_sub_resource(context, resource,
+-            sub_resource_idx, box, data, row_pitch, depth_pitch);
++    wined3d_device_context_emit_buffer_upload(context, resource,
++            sub_resource_idx, box, data, row_pitch, depth_pitch, upload_flags);
+     wined3d_device_context_unlock(context);
+ }
+ 
+--- a/dlls/wined3d/context_gl.c
++++ b/dlls/wined3d/context_gl.c
+@@ -3029,10 +3029,35 @@
+     }
+     else if (dst_bo && !src_bo)
+     {
+-        if ((map_flags & WINED3D_MAP_DISCARD) && (dst_bo->flags & GL_MAP_WRITE_BIT))
++        if ((map_flags & WINED3D_MAP_NOOVERWRITE) && range_count == 1
++                && gl_info->supported[ARB_MAP_BUFFER_RANGE] && !gl_info->supported[ARB_BUFFER_STORAGE]
++                && !dst_bo->memory && !dst_bo->b.map_ptr && (dst_bo->flags & GL_MAP_WRITE_BIT))
++        {
++            /* The application's NOOVERWRITE guarantee allows this small range
++             * to be written without waiting for earlier draws in the ring. */
++            wined3d_context_gl_bind_bo(context_gl, dst_bo->binding, dst_bo->id);
++            dst_ptr = GL_EXTCALL(glMapBufferRange(dst_bo->binding,
++                    dst_bo->b.buffer_offset + (GLintptr)dst->addr + ranges[0].offset,
++                    ranges[0].size, GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT));
++            if (dst_ptr)
++            {
++                memcpy(dst_ptr, src->addr + ranges[0].offset, ranges[0].size);
++                GL_EXTCALL(glUnmapBuffer(dst_bo->binding));
++            }
++            else
++                GL_EXTCALL(glBufferSubData(dst_bo->binding,
++                        dst_bo->b.buffer_offset + (GLintptr)dst->addr + ranges[0].offset,
++                        ranges[0].size, src->addr + ranges[0].offset));
++            wined3d_context_gl_bind_bo(context_gl, dst_bo->binding, 0);
++            checkGLcall("Altium range upload");
++        }
++        else if ((map_flags & WINED3D_MAP_DISCARD) && (dst_bo->flags & GL_MAP_WRITE_BIT))
+         {
+             dst_ptr = wined3d_context_gl_map_bo_address(context_gl, dst, dst_bo->size, map_flags);
+-            memcpy(dst_ptr, src->addr, dst_bo->size);
++            /* Partial DISCARD maps still orphan the whole store, but only
++             * the supplied ranges are readable in the upload snapshot. */
++            for (i = 0; i < range_count; ++i)
++                memcpy(dst_ptr + ranges[i].offset, src->addr + ranges[i].offset, ranges[i].size);
+             wined3d_context_gl_unmap_bo_address(context_gl, dst, range_count, ranges);
+         }
+         else
+--- a/dlls/wined3d/wined3d_private.h
++++ b/dlls/wined3d/wined3d_private.h
+@@ -2495,6 +2495,8 @@
+ #define UPLOAD_BO_UPLOAD_ON_UNMAP   0x1
+ #define UPLOAD_BO_RENAME_ON_UNMAP   0x2
+ #define UPLOAD_BO_FREE_ON_UNMAP     0x4
++#define UPLOAD_BO_ALTIUM_NOOVERWRITE 0x8
++#define UPLOAD_BO_ALTIUM_DISCARD     0x10
+ 
+ struct upload_bo
+ {
+@@ -3833,6 +3835,9 @@
+         struct wined3d_vertex_declaration *declaration);
+ void wined3d_device_context_emit_set_viewports(struct wined3d_device_context *context, unsigned int viewport_count,
+         const struct wined3d_viewport *viewports);
++void wined3d_device_context_emit_buffer_upload(struct wined3d_device_context *context,
++        struct wined3d_resource *resource, unsigned int sub_resource_idx, const struct wined3d_box *box,
++        const void *data, unsigned int row_pitch, unsigned int slice_pitch, unsigned int upload_flags);
+ void wined3d_device_context_emit_update_sub_resource(struct wined3d_device_context *context,
+         struct wined3d_resource *resource, unsigned int sub_resource_idx, const struct wined3d_box *box,
+         const void *data, unsigned int row_pitch, unsigned int slice_pitch);

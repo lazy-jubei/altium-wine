@@ -1,0 +1,67 @@
+From: Altium Wine kit contributors
+Subject: [PATCH] winemac: Deactivate AD17 floating panels before Close
+
+Scope: DXP.EXE, active TClientBarControl, same-thread enabled owner, and
+mouse-up on the rightmost caption-row TXPButtonEx. Transfer activation while
+the embedded view still exists, before Altium detaches it in the Close action.
+Coordinates are evaluated at per-monitor DPI; other buttons and windows keep
+the normal path. Apply after 0012.
+
+--- a/dlls/winemac.drv/mouse.c
++++ b/dlls/winemac.drv/mouse.c
+@@ -877,11 +877,55 @@
+     macdrv_raise_modal_popup(popup);
+ }
+ 
++/* Complete the activation transfer before AD17's client-side Close button
++ * detaches its view. Its floating panel otherwise remains active until the next
++ * native click, and Delphi then tries to deactivate an orphaned control. */
++static void deactivate_altium_panel_before_close(HWND hwnd, const macdrv_event *event)
++{
++    const WCHAR *image = RtlGetCurrentPeb()->ProcessParameters->ImagePathName.Buffer;
++    const WCHAR *base = wcsrchr(image, '\\');
++    WCHAR class_buffer[64] = {0};
++    UNICODE_STRING class_name = {0, sizeof(class_buffer), class_buffer};
++    HWND button, owner;
++    RECT panel_rect, button_rect;
++    UINT context, dpi;
++    BOOL closing = FALSE;
++
++    if (event->mouse_button.pressed || event->mouse_button.button != 0
++            || hwnd != get_active_window() || wcsicmp(base ? base + 1 : image, u"DXP.EXE")) return;
++    NtUserGetClassName(hwnd, FALSE, &class_name);
++    if (wcscmp(class_buffer, u"TClientBarControl")) return;
++    owner = NtUserGetWindowRelative(hwnd, GW_OWNER);
++    if (!owner || !NtUserIsWindowEnabled(owner) || !NtUserIsWindowVisible(owner)
++            || NtUserGetWindowThread(owner, NULL) != GetCurrentThreadId()) return;
++
++    context = NtUserSetThreadDpiAwarenessContext(NTUSER_DPI_PER_MONITOR_AWARE_V2);
++    button = NtUserWindowFromPoint(event->mouse_button.x, event->mouse_button.y);
++    if (button && NtUserGetAncestor(button, GA_ROOT) == hwnd)
++    {
++        memset(class_buffer, 0, sizeof(class_buffer));
++        NtUserGetClassName(button, FALSE, &class_name);
++        dpi = NtUserGetDpiForWindow(hwnd);
++        if (!wcscmp(class_buffer, u"TXPButtonEx") && NtUserGetWindowRect(hwnd, &panel_rect, dpi)
++                && NtUserGetWindowRect(button, &button_rect, dpi))
++            closing = button_rect.top - panel_rect.top < (int)(24 * dpi / 96)
++                    && panel_rect.right - button_rect.right < (int)(12 * dpi / 96);
++    }
++    NtUserSetThreadDpiAwarenessContext(context);
++    if (!closing) return;
++    TRACE("transferring Altium panel %p activation to owner %p before Close mouse-up\n", hwnd, owner);
++    if (NtUserGetForegroundWindow() == hwnd)
++        NtUserSetForegroundWindowInternal(owner);
++    else
++        NtUserSetActiveWindow(owner);
++}
++
+ void macdrv_mouse_button(HWND hwnd, const macdrv_event *event)
+ {
+     UINT flags = 0;
+     WORD data = 0;
+ 
++    deactivate_altium_panel_before_close(hwnd, event);
+     TRACE("win %p button %d %s at (%d,%d) time %lu (%lu ticks ago)\n", hwnd, event->mouse_button.button,
+           (event->mouse_button.pressed ? "pressed" : "released"),
+           event->mouse_button.x, event->mouse_button.y,

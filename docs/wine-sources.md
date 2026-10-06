@@ -1,6 +1,6 @@
 # Wine sources for the release
 
-The v1.0.0 release distributes five replacement Wine modules, together with
+Release archives distribute replacement Wine modules, together with
 the scripts and patches used to produce them. The complete upstream Wine
 source and Wine Staging patchset are available alongside the binaries as
 release assets. Wine is licensed under GNU LGPL 2.1 or later; the source
@@ -14,10 +14,27 @@ archive includes its AUTHORS, LICENSE and COPYING.LIB files.
 
 `build-patched-wine.sh` contains the configure options, compiler selection,
 module targets, patch order and binary transformations. It builds `winemac.so`,
-`d2d1.dll` and `winhttp.dll` from Wine 11.16 source. `winemac.so` also includes
-Wine Staging's no-flicker patch, which is retained in `patches/0000`.
+`d2d1.dll`, `winhttp.dll`, `msado15.dll` (64- and 32-bit), the 32-bit `d3dx9_43.dll`, `kernelbase.dll`, `d3d9.dll`, `wined3d.dll`, and `wineserver`
+from Wine 11.16 source. `winemac.so` also includes Wine Staging's no-flicker patch,
+which is retained in `patches/0000`; `d3dx9_43.dll` includes Wine Staging's d3dx9 changes,
+retained in `patches/0008`. The rebuilt `kernelbase.dll` retains Wine Staging's six
+kernelbase patches in `patches/0011`, including its threadpool export forwarded to
+the stock Staging `ntdll.dll`.
+`d3d9.dll` retains the Staging SWVP changes in `0016`. `wineserver` retains the enabled
+Staging server changes and protocol version 962 through `0014`; `0005` and `0013`
+fix wakeup writes and signed DPI coordinates.
+`0020` preserves queued panel-click ordering; `0021` opts AD17 windows into
+sRGB backing stores for faster schematic panning.
+`0023` adds parallel GDI copies in the Mac driver. Its private bitmap interface
+is guarded by the exact stock 11.16 `win32u` UUID, function prologue and table
+entries; an unknown module keeps ordinary copies. The stock `win32u.so` is
+retained, including its FreeType, Vulkan and Staging support.
+`wined3d.dll` retains the four enabled Staging wined3d patchsets in `0018`.
+`0019` preserves AD17's dynamic ring upload hints across D3D9 and WineD3D;
+`0022` queues immediate-draw streaming uploads for AD17.
+The 64-bit graphics modules keep the stock renderer.
 `wow64cpu.dll` and `user32.dll` are transformed from the checksum-pinned stock
-bundle by the two Python patchers in `patches/`. No other stock modules are
+bundle by two Python patchers in `patches/`. The server is compiled from source. No other stock modules are
 distributed in this repository's module archive.
 
 To build the kit's replacements on an Apple Silicon Mac with Rosetta 2,
@@ -38,3 +55,19 @@ separately by the installer.
 The release module archive includes `PATCHES` and `SHA256SUMS`, recording the
 hash of each distributed module. The release's top-level `SHA256SUMS` also
 covers the source archives.
+
+
+Patch `0023` combines the previously unpublished `0023`–`0028` sequence into its
+final implementation: parallel bitmap copies, immutable pan snapshots with
+pixel registration and coverage checks, modal input and tooltip fixes, and a
+native Apple Silicon viewport-copy worker. Every CAD input and GDI write is
+retained. Unknown Win32u builds and failed worker startup/IPC use ordinary Wine
+copies. Mach replies are verified against the spawned worker's audit PID;
+cached mappings are limited to four and can acquire write access when source
+and destination roles reverse. The driver stops its own worker when unloaded.
+
+The worker is built with the macOS SDK as `bin/altium-gdi-copy-arm64`. The
+export contains thirteen files, all listed in `SHA256SUMS`. The original
+Win32u, FreeType and Vulkan modules remain installed. Native copies defer
+while the compositor preview is active. `AD17_NATIVE_GDI=0` and
+`AD17_SMOOTH_SCHEMATIC_PAN=0` disable the respective paths before launching.

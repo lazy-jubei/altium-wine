@@ -1,0 +1,73 @@
+--- a/dlls/kernelbase/file.c
++++ b/dlls/kernelbase/file.c
+@@ -4018,7 +4018,32 @@
+ 
+     return UnlockFile( file, overlapped->Offset, overlapped->OffsetHigh, count_low, count_high );
+ }
++
++
++/* Altium 17's model server uses synchronous writes on an overlapped pipe.
++ * Other I/O on that pipe can signal the file before the write has completed.
++ * Use a private completion event for this application's NULL-overlapped writes.
++ */
++static BOOL altium_model_server_pipe( HANDLE file )
++{
++    static LONG process_match;
++    WCHAR path[MAX_PATH], *name;
++    DWORD len;
++    LONG match = process_match;
+ 
++    if (!match)
++    {
++        len = GetModuleFileNameW( NULL, path, ARRAY_SIZE(path) );
++        match = -1;
++        if (len && len < ARRAY_SIZE(path))
++        {
++            name = wcsrchr( path, '\\' );
++            if (!wcsicmp( name ? name + 1 : path, L"AltiumMS.exe" )) match = 1;
++        }
++        InterlockedCompareExchange( &process_match, match, 0 );
++    }
++    return match == 1 && GetFileType( file ) == FILE_TYPE_PIPE;
++}
+ 
+ /***********************************************************************
+  *	WriteFile   (kernelbase.@)
+@@ -4033,6 +4058,7 @@
+     IO_STATUS_BLOCK iosb;
+     PIO_STATUS_BLOCK piosb = &iosb;
+     LPVOID cvalue = NULL;
++    BOOL private_event = FALSE;
+ 
+     TRACE( "%p %p %ld %p %p\n", file, buffer, count, result, overlapped );
+ 
+@@ -4045,7 +4071,15 @@
+         piosb = (PIO_STATUS_BLOCK)overlapped;
+         if (((ULONG_PTR)event & 1) == 0) cvalue = overlapped;
+     }
+-    else piosb->Information = 0;
++    else
++    {
++        piosb->Information = 0;
++        if (altium_model_server_pipe( file ))
++        {
++            if (!(event = CreateEventW( NULL, TRUE, FALSE, NULL ))) return FALSE;
++            private_event = TRUE;
++        }
++    }
+     piosb->Status = STATUS_PENDING;
+ 
+     if (result) *result = 0;
+@@ -4054,9 +4088,11 @@
+ 
+     if (status == STATUS_PENDING && !overlapped)
+     {
+-        WaitForSingleObject( file, INFINITE );
++        WaitForSingleObject( private_event ? event : file, INFINITE );
+         status = piosb->Status;
+     }
++
++    if (private_event) CloseHandle( event );
+ 
+     if (result && (!overlapped || !status)) *result = piosb->Information;
+ 

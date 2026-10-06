@@ -7,7 +7,7 @@
 #   --version  release name, used in the asset file names
 #   --url      where the assets will be downloadable, e.g.
 #              https://github.com/OWNER/altium-wine/releases/download/v1.0
-#   --modules  output of: bash build-patched-wine.sh --export DIR  (five files + SHA256SUMS)
+#   --modules  output of: bash build-patched-wine.sh --export DIR  (thirteen files + SHA256SUMS)
 #   --out      output folder (default: ./dist/VERSION)
 #
 # Output: install.sh (stamped with the URL and checksums), altium-wine-kit-VERSION.tar.gz,
@@ -31,7 +31,8 @@ done
 case "$VERSION" in *[!A-Za-z0-9._-]*) echo "Version may only use letters, digits, . _ -" >&2; exit 1 ;; esac
 OUT="${OUT:-$KIT_DIR/dist/$VERSION}"
 
-for f in winemac.so d2d1.dll winhttp.dll wow64cpu.dll user32.dll SHA256SUMS; do
+MODULE_FILES="altium-gdi-copy-arm64 winemac.so d2d1.dll winhttp.dll msado15.dll msado15-i386.dll d3dx9_43-i386.dll kernelbase-i386.dll d3d9-i386.dll wined3d-i386.dll wow64cpu.dll user32.dll wineserver SHA256SUMS"
+for f in $MODULE_FILES; do
     [ -f "$MODULES/$f" ] || { echo "$MODULES/$f missing (make it with build-patched-wine.sh --export)" >&2; exit 1; }
 done
 ( cd "$MODULES" && shasum -a 256 -c SHA256SUMS >/dev/null ) || { echo "Checksums in $MODULES don't match" >&2; exit 1; }
@@ -44,15 +45,14 @@ trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/kit"
 ( cd "$KIT_DIR" && tar -cf - --exclude ./logs --exclude ./dist --exclude ./config.local.sh \
     --exclude ./.git --exclude ./.github --exclude ./__pycache__ \
-    --exclude '.DS_Store' --exclude '*.bak' --exclude '*.pyc' . ) | tar -xf - -C "$STAGE/kit"
+    --exclude '.DS_Store' --exclude '*.bak' --exclude '*.pyc' --exclude '*.out' . ) | tar -xf - -C "$STAGE/kit"
 mkdir -p "$STAGE/kit/logs"
 KIT_TGZ="altium-wine-kit-$VERSION.tar.gz"
 COPYFILE_DISABLE=1 tar -czf "$OUT/$KIT_TGZ" -C "$STAGE" kit
 
 # Patched Wine modules (LGPL; the patches that produce them are in the kit).
 mkdir -p "$STAGE/modules"
-cp "$MODULES"/winemac.so "$MODULES"/d2d1.dll "$MODULES"/winhttp.dll "$MODULES"/wow64cpu.dll \
-   "$MODULES"/user32.dll "$MODULES"/SHA256SUMS "$STAGE/modules/"
+for f in $MODULE_FILES; do cp "$MODULES/$f" "$STAGE/modules/"; done
 [ -f "$MODULES/PATCHES" ] && cp "$MODULES/PATCHES" "$STAGE/modules/"
 cp "$KIT_DIR/LICENSE" "$KIT_DIR/NOTICE" "$STAGE/modules/"
 cp "$KIT_DIR/docs/wine-sources.md" "$STAGE/modules/"

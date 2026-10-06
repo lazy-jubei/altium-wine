@@ -115,7 +115,7 @@ main() {
 
     # ---- the Altium installer -------------------------------------------------
     local x2 have_altium=0
-    x2="$(find "$root/prefix/drive_c/Program Files/Altium" -maxdepth 2 -iname 'X2.EXE' 2>/dev/null | head -n 1)"
+    x2="$(find_altium_exe "$root/prefix")"
     [ -n "$x2" ] && have_altium=1
     if [ $have_altium = 1 ] && [ $reinstall_altium = 0 ]; then
         skip_altium=1
@@ -231,17 +231,27 @@ main() {
                 ;;
         esac
         local inst
-        inst="$(find "$setup_dir" -maxdepth 3 -name 'Installer.Exe' 2>/dev/null | head -n 1)"
-        [ -n "$inst" ] || die "No Installer.Exe in $setup_dir"
+        inst="$(find "$setup_dir" -maxdepth 3 \( -iname 'Installer.Exe' -o -iname 'AltiumDesigner*Setup.exe' \) 2>/dev/null | head -n 1)"
+        [ -n "$inst" ] || die "No Altium installer in $setup_dir"
         say "Starting the Altium installer. In it:"
         echo "   * License Agreement page: Advanced Settings > untick 'Unified Sign In', then sign in"
         echo "     with the form inside the installer."
         echo "   * If it stops responding, a dialog is probably behind it (Mission Control shows it)."
-        bash "$aw" install "$(dirname "$inst")" < "$TTY_IN" || warn "The installer exited with an error; see $kit/logs/LATEST-summary.txt"
+        bash "$aw" install "$inst" < "$TTY_IN" || warn "The installer exited with an error; see $kit/logs/LATEST-summary.txt"
         case "$setup_dir" in "$dl"/*) rm -rf "$setup_dir" ;; esac  # our unzipped copy only
-        x2="$(find "$root/prefix/drive_c/Program Files/Altium" -maxdepth 2 -iname 'X2.EXE' 2>/dev/null | head -n 1)"
+        x2="$(find_altium_exe "$root/prefix")"
         [ -n "$x2" ] && have_altium=1
     fi
+
+    # Altium 17 and older (32-bit DXP.EXE) load .NET extensions that Wine Mono can't host.
+    case "$x2" in
+        *DXP.EXE|*dxp.exe)
+            if ! grep -qw dotnet48 "$root/prefix/.altium-kit-deps" 2>/dev/null; then
+                say "Installing Microsoft .NET Framework 4.8 for Altium 17 (about 5 minutes)"
+                bash "$aw" deps dotnet48 < "$TTY_IN" || warn ".NET 4.8 install had problems; Altium 17's .NET extensions may not load."
+            fi
+            ;;
+    esac
 
     if [ $launcher = 1 ] && [ $have_altium = 1 ]; then
         bash "$aw" launcher < "$TTY_IN" || warn "Couldn't create the launcher app."
@@ -293,7 +303,7 @@ find_altium_installer() {  # newest Altium offline setup folder (or zip) in ~/Do
     local d
     for d in $(ls -dt "$HOME"/Downloads/*Altium*Designer* 2>/dev/null | tr ' ' '\001'); do
         d="$(echo "$d" | tr '\001' ' ')"
-        if [ -d "$d" ] && find "$d" -maxdepth 2 -name 'Installer.Exe' 2>/dev/null | grep -q .; then
+        if [ -d "$d" ] && find "$d" -maxdepth 2 \( -iname 'Installer.Exe' -o -iname 'AltiumDesigner*Setup.exe' \) 2>/dev/null | grep -q .; then
             echo "$d"; return 0
         fi
     done
@@ -301,6 +311,13 @@ find_altium_installer() {  # newest Altium offline setup folder (or zip) in ~/Do
         echo "$d" | tr '\001' ' '; return 0
     done
     return 0
+}
+
+find_altium_exe() {  # find_altium_exe PREFIX: X2.EXE (Altium 18+) or DXP.EXE (17 and older)
+    local c="$1/drive_c" exe
+    exe="$(find "$c/Program Files/Altium" -maxdepth 2 -iname 'X2.EXE' 2>/dev/null | head -n 1)"
+    [ -n "$exe" ] || exe="$(find "$c/Program Files (x86)/Altium" -maxdepth 2 -iname 'DXP.EXE' 2>/dev/null | head -n 1)"
+    echo "$exe"
 }
 
 patched_matches() {  # patched_matches PATCHES SHA256SUMS - every module hash appears in the manifest

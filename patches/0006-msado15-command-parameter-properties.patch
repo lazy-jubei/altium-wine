@@ -1,0 +1,362 @@
+From: Altium-on-Wine kit
+Subject: msado15: Implement the simple Command and Parameter properties, and Parameters.Item
+
+Modules: dlls/msado15
+Base: wine-11.16 (wine-staging does not touch msado15)
+
+Altium Designer 17's integrated library server (Delphi ADO components) builds a
+Command, sets CommandTimeout, creates a Parameter and reads its NumericScale/Precision,
+then sets Prepared. Each of these was a FIXME returning E_NOTIMPL, which Delphi turns
+into an EOleException; the server then failed to initialize and Altium 17 crashed at
+startup with an access violation in IntegratedLibrary.DLL.
+
+Command: CommandTimeout (default 30), Prepared, Name, State (adStateClosed), Cancel,
+Dialect (default DBGUID_DEFAULT) and NamedParameters are now stored properties.
+Parameter: Precision, NumericScale, Attributes (default adParamSigned) and AppendChunk
+(for empty and string values). Parameters.Item looks parameters up by index or name.
+Also initialize Parameter.value before VariantCopy() into it.
+
+--- a/dlls/msado15/command.c
++++ b/dlls/msado15/command.c
+@@ -46,6 +46,11 @@
+     CommandTypeEnum  type;
+     BSTR             text;
+     _Connection     *connection;
++    LONG             timeout;
++    VARIANT_BOOL     prepared;
++    VARIANT_BOOL     named_parameters;
++    BSTR             name;
++    BSTR             dialect;
+ 
+     struct list parameters;
+ };
+@@ -60,6 +65,9 @@
+     ParameterDirectionEnum direction;
+     ADO_LONGPTR size;
+     VARIANT value;
++    unsigned char precision;
++    unsigned char scale;
++    LONG attributes;
+ };
+ 
+ static inline struct parameter *impl_from_Parameter( _Parameter *iface )
+@@ -241,8 +249,50 @@
+ 
+ static HRESULT WINAPI parameters_get_Item(Parameters *iface, VARIANT index, _Parameter **object)
+ {
+-    FIXME( "%p, %s, %p\n", iface, debugstr_variant(&index), object);
+-    return E_NOTIMPL;
++    struct command *command = impl_from_Parameters( iface );
++    struct param_item *para;
++    VARIANT num;
++    int cnt = 0;
++
++    TRACE( "%p, %s, %p\n", iface, debugstr_variant(&index), object);
++
++    if (!object) return E_POINTER;
++    *object = NULL;
++
++    if (V_VT(&index) == VT_BSTR)
++    {
++        LIST_FOR_EACH_ENTRY(para, &command->parameters, struct param_item, entry)
++        {
++            _Parameter *parameter;
++            BSTR name = NULL;
++            BOOL match;
++
++            if (FAILED(IDispatch_QueryInterface( para->param, &IID__Parameter, (void **)&parameter ))) continue;
++            match = SUCCEEDED(_Parameter_get_Name( parameter, &name )) && name && V_BSTR(&index) &&
++                    !wcsicmp( name, V_BSTR(&index) );
++            SysFreeString( name );
++            if (match)
++            {
++                *object = parameter;
++                return S_OK;
++            }
++            _Parameter_Release( parameter );
++        }
++        return MAKE_ADO_HRESULT(adErrItemNotFound);
++    }
++
++    VariantInit( &num );
++    if (FAILED(VariantChangeType( &num, &index, 0, VT_I4 )))
++    {
++        FIXME("Unsupported index type %d\n", V_VT(&index));
++        return MAKE_ADO_HRESULT(adErrItemNotFound);
++    }
++    LIST_FOR_EACH_ENTRY(para, &command->parameters, struct param_item, entry)
++    {
++        if (cnt++ == V_I4(&num))
++            return IDispatch_QueryInterface( para->param, &IID__Parameter, (void **)object );
++    }
++    return MAKE_ADO_HRESULT(adErrItemNotFound);
+ }
+ 
+ static const struct ParametersVtbl parameters_vtbl =
+@@ -317,6 +367,8 @@
+ 
+         if (command->connection) _Connection_Release(command->connection);
+         free( command->text );
++        SysFreeString( command->name );
++        SysFreeString( command->dialect );
+         free( command );
+     }
+     return ref;
+@@ -437,26 +489,37 @@
+ 
+ static HRESULT WINAPI command_get_CommandTimeout( _Command *iface, LONG *timeout )
+ {
+-    FIXME( "%p, %p\n", iface, timeout );
+-    return E_NOTIMPL;
++    struct command *command = impl_from_Command( iface );
++    TRACE( "%p, %p\n", iface, timeout );
++    if (!timeout) return E_POINTER;
++    *timeout = command->timeout;
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI command_put_CommandTimeout( _Command *iface, LONG timeout )
+ {
+-    FIXME( "%p, %ld\n", iface, timeout );
+-    return E_NOTIMPL;
++    struct command *command = impl_from_Command( iface );
++    TRACE( "%p, %ld\n", iface, timeout );
++    if (timeout < 0) return MAKE_ADO_HRESULT( adErrInvalidArgument );
++    command->timeout = timeout;  /* stored only; queries aren't timed out */
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI command_get_Prepared( _Command *iface, VARIANT_BOOL *prepared )
+ {
+-    FIXME( "%p, %p\n", iface, prepared );
+-    return E_NOTIMPL;
++    struct command *command = impl_from_Command( iface );
++    TRACE( "%p, %p\n", iface, prepared );
++    if (!prepared) return E_POINTER;
++    *prepared = command->prepared;
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI command_put_Prepared( _Command *iface, VARIANT_BOOL prepared )
+ {
+-    FIXME( "%p, %d\n", iface, prepared );
+-    return E_NOTIMPL;
++    struct command *command = impl_from_Command( iface );
++    TRACE( "%p, %d\n", iface, prepared );
++    command->prepared = prepared;  /* a hint for the provider; ignored */
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI command_Execute( _Command *iface, VARIANT *affected, VARIANT *parameters,
+@@ -641,29 +704,35 @@
+ static HRESULT WINAPI parameter_put_Precision(_Parameter *iface, unsigned char precision)
+ {
+     struct parameter *parameter = impl_from_Parameter( iface );
+-    FIXME("%p, %d\n", parameter, precision);
+-    return E_NOTIMPL;
++    TRACE("%p, %d\n", parameter, precision);
++    parameter->precision = precision;
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI parameter_get_Precision(_Parameter *iface, unsigned char *precision)
+ {
+     struct parameter *parameter = impl_from_Parameter( iface );
+-    FIXME("%p, %p\n", parameter, precision);
+-    return E_NOTIMPL;
++    TRACE("%p, %p\n", parameter, precision);
++    if (!precision) return E_POINTER;
++    *precision = parameter->precision;
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI parameter_put_NumericScale(_Parameter *iface, unsigned char scale)
+ {
+     struct parameter *parameter = impl_from_Parameter( iface );
+-    FIXME("%p, %d\n", parameter, scale);
+-    return E_NOTIMPL;
++    TRACE("%p, %d\n", parameter, scale);
++    parameter->scale = scale;
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI parameter_get_NumericScale(_Parameter *iface, unsigned char *scale)
+ {
+     struct parameter *parameter = impl_from_Parameter( iface );
+-    FIXME("%p, %p\n", parameter, scale);
+-    return E_NOTIMPL;
++    TRACE("%p, %p\n", parameter, scale);
++    if (!scale) return E_POINTER;
++    *scale = parameter->scale;
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI parameter_put_Size(_Parameter *iface, ADO_LONGPTR size)
+@@ -685,22 +754,44 @@
+ static HRESULT WINAPI parameter_AppendChunk(_Parameter *iface, VARIANT val)
+ {
+     struct parameter *parameter = impl_from_Parameter( iface );
+-    FIXME("%p, %s\n", parameter, debugstr_variant(&val));
++    BSTR joined;
++
++    TRACE("%p, %s\n", parameter, debugstr_variant(&val));
++
++    if (V_VT(&parameter->value) == VT_EMPTY || V_VT(&parameter->value) == VT_NULL)
++    {
++        VariantClear( &parameter->value );
++        return VariantCopy( &parameter->value, &val );
++    }
++    if (V_VT(&parameter->value) == VT_BSTR && V_VT(&val) == VT_BSTR)
++    {
++        UINT len = SysStringLen( V_BSTR(&parameter->value) );
++        if (!(joined = SysAllocStringLen( NULL, len + SysStringLen( V_BSTR(&val) ) ))) return E_OUTOFMEMORY;
++        memcpy( joined, V_BSTR(&parameter->value), len * sizeof(WCHAR) );
++        memcpy( joined + len, V_BSTR(&val), SysStringLen( V_BSTR(&val) ) * sizeof(WCHAR) );
++        SysFreeString( V_BSTR(&parameter->value) );
++        V_BSTR(&parameter->value) = joined;
++        return S_OK;
++    }
++    FIXME("%p, appending %s to %s\n", parameter, debugstr_variant(&val), debugstr_variant(&parameter->value));
+     return E_NOTIMPL;
+ }
+ 
+ static HRESULT WINAPI parameter_get_Attributes(_Parameter *iface, LONG *attrs)
+ {
+     struct parameter *parameter = impl_from_Parameter( iface );
+-    FIXME("%p, %p\n", parameter, attrs);
+-    return E_NOTIMPL;
++    TRACE("%p, %p\n", parameter, attrs);
++    if (!attrs) return E_POINTER;
++    *attrs = parameter->attributes;
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI parameter_put_Attributes(_Parameter *iface, LONG attrs)
+ {
+     struct parameter *parameter = impl_from_Parameter( iface );
+-    FIXME("%p, %ld\n", parameter, attrs);
+-    return E_NOTIMPL;
++    TRACE("%p, %ld\n", parameter, attrs);
++    parameter->attributes = attrs;
++    return S_OK;
+ }
+ 
+ static const _ParameterVtbl parameter_vtbl =
+@@ -747,6 +838,10 @@
+     parameter->datatype = type;
+     parameter->direction = direction;
+     parameter->size = size;
++    parameter->precision = 0;
++    parameter->scale = 0;
++    parameter->attributes = 0x10;  /* adParamSigned, ADO's default */
++    VariantInit(&parameter->value);
+     VariantCopy(&parameter->value, &value);
+ 
+     *obj = &parameter->Parameter_iface;
+@@ -803,26 +898,37 @@
+ 
+ static HRESULT WINAPI command_get_Name(_Command *iface, BSTR *name)
+ {
+-    FIXME( "%p, %p\n", iface, name );
+-    return E_NOTIMPL;
++    struct command *command = impl_from_Command( iface );
++    TRACE( "%p, %p\n", iface, name );
++    if (!name) return E_POINTER;
++    if (command->name && !(*name = SysAllocString( command->name ))) return E_OUTOFMEMORY;
++    if (!command->name) *name = NULL;
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI command_put_Name( _Command *iface, BSTR name )
+ {
+-    FIXME( "%p, %s\n", iface, debugstr_w(name) );
+-    return E_NOTIMPL;
++    struct command *command = impl_from_Command( iface );
++    BSTR copy = NULL;
++    TRACE( "%p, %s\n", iface, debugstr_w(name) );
++    if (name && !(copy = SysAllocString( name ))) return E_OUTOFMEMORY;
++    SysFreeString( command->name );
++    command->name = copy;
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI command_get_State( _Command *iface, LONG *state )
+ {
+-    FIXME( "%p, %p\n", iface, state );
+-    return E_NOTIMPL;
++    TRACE( "%p, %p\n", iface, state );
++    if (!state) return E_POINTER;
++    *state = adStateClosed;  /* commands execute synchronously */
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI command_Cancel( _Command *iface )
+ {
+-    FIXME( "%p\n", iface );
+-    return E_NOTIMPL;
++    TRACE( "%p\n", iface );
++    return S_OK;  /* nothing runs asynchronously, so nothing to cancel */
+ }
+ 
+ static HRESULT WINAPI command_putref_CommandStream( _Command *iface, IUnknown *stream )
+@@ -839,26 +945,40 @@
+ 
+ static HRESULT WINAPI command_put_Dialect( _Command *iface, BSTR dialect )
+ {
+-    FIXME( "%p, %s\n", iface, debugstr_w(dialect) );
+-    return E_NOTIMPL;
++    struct command *command = impl_from_Command( iface );
++    BSTR copy = NULL;
++    TRACE( "%p, %s\n", iface, debugstr_w(dialect) );
++    if (dialect && !(copy = SysAllocString( dialect ))) return E_OUTOFMEMORY;
++    SysFreeString( command->dialect );
++    command->dialect = copy;
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI command_get_Dialect( _Command *iface, BSTR *dialect )
+ {
+-    FIXME( "%p, %p\n", iface, dialect );
+-    return E_NOTIMPL;
++    struct command *command = impl_from_Command( iface );
++    static const WCHAR dbguid_default[] = L"{C8B521FB-5CF3-11CE-ADE5-00AA0044773D}";
++    TRACE( "%p, %p\n", iface, dialect );
++    if (!dialect) return E_POINTER;
++    if (!(*dialect = SysAllocString( command->dialect ? command->dialect : dbguid_default ))) return E_OUTOFMEMORY;
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI command_put_NamedParameters( _Command *iface, VARIANT_BOOL parameters )
+ {
+-    FIXME( "%p, %d\n", iface, parameters );
+-    return E_NOTIMPL;
++    struct command *command = impl_from_Command( iface );
++    TRACE( "%p, %d\n", iface, parameters );
++    command->named_parameters = parameters;
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI command_get_NamedParameters( _Command *iface, VARIANT_BOOL *parameters )
+ {
+-    FIXME( "%p, %p\n", iface, parameters );
+-    return E_NOTIMPL;
++    struct command *command = impl_from_Command( iface );
++    TRACE( "%p, %p\n", iface, parameters );
++    if (!parameters) return E_POINTER;
++    *parameters = command->named_parameters;
++    return S_OK;
+ }
+ 
+ static const struct _CommandVtbl command_vtbl =
+@@ -962,6 +1082,11 @@
+     command->type = adCmdUnknown;
+     command->text = NULL;
+     command->connection = NULL;
++    command->timeout = 30;  /* ADO's default */
++    command->prepared = VARIANT_FALSE;
++    command->named_parameters = VARIANT_FALSE;
++    command->name = NULL;
++    command->dialect = NULL;
+     list_init(&command->parameters);
+     command->ref = 1;
+ 

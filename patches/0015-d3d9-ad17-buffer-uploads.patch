@@ -1,0 +1,292 @@
+From: Altium Wine kit contributors
+Subject: [PATCH] d3d9: Queue partial dynamic-buffer uploads for AD17
+
+Opt-in with ALTIUM_D3D9_UPLOADS=1. Avoid repeated synchronous command-thread
+map/unmap round trips for AD17's 2 MiB dynamic rings. Preserve update/draw
+ordering, nested locks and untouched ranges; leave managed/static buffers
+and other applications on the normal path.
+
+--- a/dlls/d3d9/buffer.c
++++ b/dlls/d3d9/buffer.c
+@@ -22,6 +22,68 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(d3d9);
+ 
++/* AD17 issues thousands of small NOOVERWRITE locks on a 2 MiB dynamic ring
++ * buffer per frame. A synchronous command-thread map/unmap for each write is
++ * expensive under WoW64/Rosetta. Queue copies of just the written ranges instead.
++ * The command stream snapshots each update, preserving its order with draws.
++ * Other applications and managed/static buffers keep the normal mapping path. */
++#define D3D9_ALTIUM_UPLOAD_MAX_SIZE (4 * 1024 * 1024)
++
++static HRESULT d3d9_shadow_lock(struct d3d9_device *device, struct wined3d_buffer *buffer,
++        DWORD usage, bool system_memory, struct d3d9_shadow_map *map, UINT offset, UINT size,
++        DWORD flags, void **data)
++{
++    struct wined3d_resource_desc desc;
++    struct wined3d_box *ranges;
++    unsigned int capacity;
++
++    if (!device->altium_uploads || system_memory || map->legacy_locks
++            || (usage & (D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY)) != (D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY)
++            || (!map->pending_locks && !(flags & (D3DLOCK_DISCARD | D3DLOCK_NOOVERWRITE))))
++        return S_FALSE;
++
++    wined3d_resource_get_desc(wined3d_buffer_get_resource(buffer), &desc);
++    if (desc.size > D3D9_ALTIUM_UPLOAD_MAX_SIZE)
++        return S_FALSE;
++    if (!data || (flags & D3DLOCK_READONLY) || offset > desc.size || size > desc.size - offset)
++        return D3DERR_INVALIDCALL;
++    if (!size)
++        size = desc.size - offset;
++    if (!map->data && !(map->data = malloc(desc.size)))
++        return E_OUTOFMEMORY;
++    if (map->range_count == map->range_capacity)
++    {
++        capacity = map->range_capacity ? map->range_capacity * 2 : 4;
++        if (!(ranges = realloc(map->ranges, capacity * sizeof(*ranges))))
++            return E_OUTOFMEMORY;
++        map->ranges = ranges;
++        map->range_capacity = capacity;
++    }
++
++    /* Keep disjoint ranges separate: uploading gaps would overwrite valid data.
++     * Nested locks share CPU storage and commit only after the last Unlock. */
++    wined3d_box_set(&map->ranges[map->range_count++], offset, 0, offset + size, 1, 0, 1);
++    ++map->pending_locks;
++    *data = (BYTE *)map->data + offset;
++    return D3D_OK;
++}
++
++static void d3d9_shadow_unlock(struct d3d9_device *device, struct wined3d_buffer *buffer,
++        struct d3d9_shadow_map *map)
++{
++    unsigned int i;
++
++    if (--map->pending_locks)
++        return;
++    for (i = 0; i < map->range_count; ++i)
++    {
++        const struct wined3d_box *box = &map->ranges[i];
++        wined3d_device_context_update_sub_resource(device->immediate_context,
++                wined3d_buffer_get_resource(buffer), 0, box, (BYTE *)map->data + box->left, 0, 0, 0);
++    }
++    map->range_count = 0;
++}
++
+ static inline struct d3d9_vertexbuffer *impl_from_IDirect3DVertexBuffer9(IDirect3DVertexBuffer9 *iface)
+ {
+     return CONTAINING_RECORD(iface, struct d3d9_vertexbuffer, IDirect3DVertexBuffer9_iface);
+@@ -193,12 +255,21 @@
+     TRACE("iface %p, offset %u, size %u, data %p, flags %#lx.\n",
+             iface, offset, size, data, flags);
+ 
++    wined3d_mutex_lock();
++    hr = d3d9_shadow_lock(impl_from_IDirect3DDevice9Ex(buffer->parent_device),
++            buffer->wined3d_buffer, buffer->usage, !!buffer->draw_buffer, &buffer->shadow, offset, size, flags, data);
++    wined3d_mutex_unlock();
++    if (hr != S_FALSE)
++        return hr;
++
+     wined3d_box_set(&wined3d_box, offset, 0, offset + size, 1, 0, 1);
+ 
+     wined3d_resource = wined3d_buffer_get_resource(buffer->wined3d_buffer);
+     hr = wined3d_resource_map(wined3d_resource, 0, &wined3d_map_desc, &wined3d_box,
+             wined3dmapflags_from_d3dmapflags(flags, buffer->usage));
+     *data = wined3d_map_desc.data;
++    if (SUCCEEDED(hr))
++        ++buffer->shadow.legacy_locks;
+ 
+     return hr;
+ }
+@@ -209,6 +280,17 @@
+ 
+     TRACE("iface %p.\n", iface);
+ 
++    wined3d_mutex_lock();
++    if (buffer->shadow.pending_locks)
++    {
++        d3d9_shadow_unlock(impl_from_IDirect3DDevice9Ex(buffer->parent_device),
++                buffer->wined3d_buffer, &buffer->shadow);
++        wined3d_mutex_unlock();
++        return D3D_OK;
++    }
++    if (buffer->shadow.legacy_locks)
++        --buffer->shadow.legacy_locks;
++    wined3d_mutex_unlock();
+     wined3d_resource_unmap(wined3d_buffer_get_resource(buffer->wined3d_buffer), 0);
+ 
+     return D3D_OK;
+@@ -266,6 +348,8 @@
+     if (buffer->draw_buffer)
+         wined3d_buffer_decref(buffer->wined3d_buffer);
+     d3d9_resource_cleanup(&buffer->resource);
++    free(buffer->shadow.ranges);
++    free(buffer->shadow.data);
+     free(buffer);
+ }
+ 
+@@ -517,12 +601,21 @@
+     TRACE("iface %p, offset %u, size %u, data %p, flags %#lx.\n",
+             iface, offset, size, data, flags);
+ 
++    wined3d_mutex_lock();
++    hr = d3d9_shadow_lock(impl_from_IDirect3DDevice9Ex(buffer->parent_device),
++            buffer->wined3d_buffer, buffer->usage, buffer->sysmem, &buffer->shadow, offset, size, flags, data);
++    wined3d_mutex_unlock();
++    if (hr != S_FALSE)
++        return hr;
++
+     wined3d_box_set(&wined3d_box, offset, 0, offset + size, 1, 0, 1);
+ 
+     wined3d_resource = wined3d_buffer_get_resource(buffer->wined3d_buffer);
+     hr = wined3d_resource_map(wined3d_resource, 0, &wined3d_map_desc, &wined3d_box,
+             wined3dmapflags_from_d3dmapflags(flags, buffer->usage));
+     *data = wined3d_map_desc.data;
++    if (SUCCEEDED(hr))
++        ++buffer->shadow.legacy_locks;
+ 
+     return hr;
+ }
+@@ -533,6 +626,17 @@
+ 
+     TRACE("iface %p.\n", iface);
+ 
++    wined3d_mutex_lock();
++    if (buffer->shadow.pending_locks)
++    {
++        d3d9_shadow_unlock(impl_from_IDirect3DDevice9Ex(buffer->parent_device),
++                buffer->wined3d_buffer, &buffer->shadow);
++        wined3d_mutex_unlock();
++        return D3D_OK;
++    }
++    if (buffer->shadow.legacy_locks)
++        --buffer->shadow.legacy_locks;
++    wined3d_mutex_unlock();
+     wined3d_resource_unmap(wined3d_buffer_get_resource(buffer->wined3d_buffer), 0);
+ 
+     return D3D_OK;
+@@ -586,6 +690,8 @@
+     struct d3d9_indexbuffer *buffer = parent;
+ 
+     d3d9_resource_cleanup(&buffer->resource);
++    free(buffer->shadow.ranges);
++    free(buffer->shadow.data);
+     free(buffer);
+ }
+ 
+--- a/dlls/d3d9/device.c
++++ b/dlls/d3d9/device.c
+@@ -3239,6 +3239,28 @@
+     }
+ }
+ 
++static bool d3d9_device_shadow_buffers_locked(const struct d3d9_device *device, bool indexed)
++{
++    unsigned int i;
++
++    if (!device->altium_uploads)
++        return false;
++    for (i = 0; i < D3D9_MAX_STREAMS; ++i)
++    {
++        struct wined3d_buffer *buffer = device->stateblock_state->streams[i].buffer;
++        struct d3d9_vertexbuffer *parent = buffer ? wined3d_buffer_get_parent(buffer) : NULL;
++        if (parent && parent->shadow.pending_locks)
++            return true;
++    }
++    if (indexed && device->stateblock_state->index_buffer)
++    {
++        struct d3d9_indexbuffer *parent = wined3d_buffer_get_parent(device->stateblock_state->index_buffer);
++        if (parent && parent->shadow.pending_locks)
++            return true;
++    }
++    return false;
++}
++
+ static HRESULT WINAPI d3d9_device_DrawPrimitive(IDirect3DDevice9Ex *iface,
+         D3DPRIMITIVETYPE primitive_type, UINT start_vertex, UINT primitive_count)
+ {
+@@ -3249,6 +3271,11 @@
+             iface, primitive_type, start_vertex, primitive_count);
+ 
+     wined3d_mutex_lock();
++    if (d3d9_device_shadow_buffers_locked(device, false))
++    {
++        wined3d_mutex_unlock();
++        return D3DERR_INVALIDCALL;
++    }
+     if (!device->stateblock_state->vertex_declaration)
+     {
+         wined3d_mutex_unlock();
+@@ -3286,6 +3313,11 @@
+             vertex_count, start_idx, primitive_count);
+ 
+     wined3d_mutex_lock();
++    if (d3d9_device_shadow_buffers_locked(device, true))
++    {
++        wined3d_mutex_unlock();
++        return D3DERR_INVALIDCALL;
++    }
+     if (!device->stateblock_state->vertex_declaration)
+     {
+         wined3d_mutex_unlock();
+@@ -4767,6 +4799,7 @@
+     unsigned i, count = 1;
+     D3DCAPS9 caps;
+     HRESULT hr;
++    WCHAR upload_option[2];
+ 
+     static const enum wined3d_feature_level feature_levels[] =
+     {
+@@ -4791,6 +4824,8 @@
+     device->device_parent.ops = &d3d9_wined3d_device_parent_ops;
+     device->adapter_ordinal = adapter;
+     device->refcount = 1;
++    device->altium_uploads = GetEnvironmentVariableW(L"ALTIUM_D3D9_UPLOADS", upload_option,
++            ARRAY_SIZE(upload_option)) == 1 && upload_option[0] == '1';
+ 
+     if (!(flags & D3DCREATE_FPU_PRESERVE)) setup_fpu();
+ 
+--- a/dlls/d3d9/d3d9_private.h
++++ b/dlls/d3d9/d3d9_private.h
+@@ -110,7 +110,8 @@
+     DWORD sysmem_ib : 1;
+     DWORD in_destruction : 1;
+     DWORD in_scene : 1;
+-    DWORD padding : 13;
++    DWORD altium_uploads : 1;
++    DWORD padding : 12;
+ 
+     DWORD auto_mipmaps; /* D3D9_MAX_TEXTURE_UNITS */
+ 
+@@ -188,6 +189,14 @@
+         struct wined3d_rendertarget_view *rtv);
+ struct d3d9_surface *unsafe_impl_from_IDirect3DSurface9(IDirect3DSurface9 *iface);
+ 
++/* CPU write staging for the opt-in AD17 dynamic-buffer path. */
++struct d3d9_shadow_map
++{
++    void *data;
++    struct wined3d_box *ranges;
++    unsigned int range_count, range_capacity, pending_locks, legacy_locks;
++};
++
+ struct d3d9_vertexbuffer
+ {
+     IDirect3DVertexBuffer9 IDirect3DVertexBuffer9_iface;
+@@ -196,6 +205,7 @@
+     IDirect3DDevice9Ex *parent_device;
+     struct wined3d_buffer *draw_buffer;
+     DWORD fvf, usage;
++    struct d3d9_shadow_map shadow;
+ };
+ 
+ HRESULT vertexbuffer_init(struct d3d9_vertexbuffer *buffer, struct d3d9_device *device,
+@@ -211,6 +221,7 @@
+     enum wined3d_format_id format;
+     DWORD usage;
+     bool sysmem;
++    struct d3d9_shadow_map shadow;
+ };
+ 
+ HRESULT indexbuffer_init(struct d3d9_indexbuffer *buffer, struct d3d9_device *device,

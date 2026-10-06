@@ -8,7 +8,7 @@
 #   deps [verbs]  install winetricks verbs (default: WINETRICKS_VERBS in config.sh)
 #   install [DIR] run the Altium offline installer (Installer.Exe in DIR, default: the folder
 #                 that contains this kit) with debug logging
-#   run           launch the installed Altium Designer (X2.EXE) with debug logging
+#   run           launch the installed Altium Designer (X2.EXE, or DXP.EXE for 17 and older)
 #   hang-dump     backtrace every Wine thread; run this from a 2nd Terminal while something hangs
 #   doctor        write system / Wine / prefix diagnostics to logs/
 #   wine ARGS...  run any command in the Altium prefix, e.g.  wine winecfg   or   wine regedit
@@ -225,7 +225,7 @@ ensure_patched_wine() {  # build (or fetch) the patched bundle if USE_PATCHED_WI
 # so a CrossOver bottle or another prefix doesn't block anything.
 altium_running() {
     pgrep -f "$WORK_ROOT/wine" >/dev/null 2>&1 || return 1
-    pgrep -f 'X2\.EXE|Installer\.Exe' >/dev/null 2>&1
+    pgrep -f 'X2\.EXE|DXP\.EXE|Installer\.Exe|AltiumDesigner[0-9]*Setup' >/dev/null 2>&1
 }
 
 # ---- prefix ----------------------------------------------------------------
@@ -551,23 +551,61 @@ print_installer_tips() {
 EOF
 }
 
-cmd_install() {
-    local dir="${1:-$ALTIUM_DIR}"
+cmd_install() {  # cmd_install [DIR | DIR/setup.exe]
+    local dir="${1:-$ALTIUM_DIR}" exe=""
+    case "$dir" in
+        *.exe|*.Exe|*.EXE) exe="$(basename "$dir")"; dir="$(dirname "$dir")" ;;
+    esac
+    if [ -z "$exe" ]; then
+        # Installer.Exe (Altium 18 and later) or AltiumDesigner<N>Setup.exe (older offline setups)
+        exe="$(cd "$dir" 2>/dev/null && ls Installer.Exe AltiumDesigner*Setup.exe 2>/dev/null | head -n 1)"
+    fi
+    [ -n "$exe" ] && [ -f "$dir/$exe" ] || die "No Altium installer in $dir (pass the unzipped Altium offline setup folder)"
     ensure_setup
-    [ -f "$dir/Installer.Exe" ] || die "Installer.Exe not found in $dir (pass the unzipped Altium offline setup folder)"
     wine_env "$WINEDEBUG_INSTALL"
     print_installer_tips | sed "s#<kit>#$KIT_DIR#"
-    launch_logged installer "$dir" "Installer.Exe"
+    launch_logged installer "$dir" "$exe"
+}
+
+# The installed Altium: the newest X2.EXE (Altium 18 and later, 64-bit, Program Files), else
+# DXP.EXE (Altium 17 and older, 32-bit, Program Files (x86)).
+find_altium_exe() {
+    local c="$PREFIX/drive_c" exe
+    exe="$(find "$c/Program Files/Altium" -maxdepth 2 -iname 'X2.EXE' 2>/dev/null | sort | tail -n 1)"
+    [ -n "$exe" ] || exe="$(find "$c/Program Files (x86)/Altium" "$c/Program Files/Altium" -maxdepth 2 \
+        -iname 'DXP.EXE' 2>/dev/null | sort | tail -n 1)"
+    echo "$exe"
 }
 
 cmd_run() {
     ensure_setup
     local exe
-    exe="$(find "$PREFIX/drive_c/Program Files/Altium" -maxdepth 2 -iname 'X2.EXE' 2>/dev/null | sort | tail -n 1)"
-    [ -n "$exe" ] || die "No X2.EXE under C:\\Program Files\\Altium yet. Install first."
+    exe="$(find_altium_exe)"
+    [ -n "$exe" ] || die "No Altium (X2.EXE or DXP.EXE) under C:\\Program Files yet. Install first."
     install_dxvk "$(dirname "$exe")"
+    case "$exe" in *DXP.EXE|*dxp.exe)
+        grep -qw dotnet48 "$PREFIX/.altium-kit-deps" 2>/dev/null \
+            || warn "Altium 17's .NET extensions need .NET 4.8: bash \"$KIT_DIR/altium-wine.sh\" deps dotnet48" ;;
+    esac
     wine_env "$WINEDEBUG_RUN"
-    [ "${KILL_WEBVIEW2:-1}" = "1" ] && webview2_watchdog &
+    # Only Altium 18+ (X2.EXE) has the WebView2 browser the watchdog ends.
+    case "$exe" in *X2.EXE|*x2.exe) [ "${KILL_WEBVIEW2:-1}" = "1" ] && webview2_watchdog & ;; esac
+    # AD17's CefSharp GPU process spins under Wine. Software Chromium rendering
+    # restores the Home page/reports without changing the PCB's Direct3D renderer.
+    case "$exe" in *DXP.EXE|*dxp.exe)
+        export ALTIUM_D3D9_UPLOADS="${AD17_FAST_UPLOADS:-1}"
+        export ALTIUM_D3D9_UPLOAD_HINTS="${AD17_FAST_UPLOAD_HINTS:-1}"
+        export ALTIUM_D3D9_QUEUED_UP="${AD17_FAST_UP_DRAWS:-1}"
+        export ALTIUM_MAC_SRGB="${AD17_SRGB_WINDOWS:-1}"
+        export ALTIUM_PARALLEL_GDI="${AD17_PARALLEL_GDI:-1}"
+        export ALTIUM_GDI_WORKERS="${AD17_GDI_WORKERS:-2}"
+        export ALTIUM_NATIVE_GDI="${AD17_NATIVE_GDI:-1}"
+        export ALTIUM_NATIVE_GDI_WORKERS="${AD17_NATIVE_GDI_WORKERS:-2}"
+        export ALTIUM_SMOOTH_SCHEMATIC_PAN="${AD17_SMOOTH_SCHEMATIC_PAN:-1}"
+        if [ "${AD17_CEF_SOFTWARE_RENDERING:-1}" = "1" ]; then
+            set -- --disable-gpu --disable-gpu-compositing "$@"
+        fi ;;
+    esac
     launch_logged altium "$(dirname "$exe")" "$(basename "$exe")" "$@"
 }
 
@@ -664,10 +702,15 @@ cmd_reset() {
 LAUNCHER_NAME="Altium Designer (Wine).app"
 
 cmd_launcher() {  # cmd_launcher [DIR]: a small .app that runs `altium-wine.sh run`, with Altium's icon
-    local dir="${1:-$HOME/Applications}" app exe
-    app="$dir/$LAUNCHER_NAME"
-    exe="$(find "$PREFIX/drive_c/Program Files/Altium" -maxdepth 2 -iname 'X2.EXE' 2>/dev/null | sort | tail -n 1)"
+    local dir="${1:-$HOME/Applications}" app exe exe_name name="$LAUNCHER_NAME"
+    exe="$(find_altium_exe)"
     [ -n "$exe" ] || die "Altium isn't installed in $PREFIX yet; install it first."
+    exe_name="$(basename "$exe")"
+    # Altium 17 and older (DXP.EXE) get their own name, e.g. "Altium Designer 17 (Wine).app".
+    case "$exe_name" in DXP.EXE|dxp.exe)
+        name="Altium Designer $(basename "$(dirname "$exe")" | sed 's/^AD//') (Wine).app" ;;
+    esac
+    app="$dir/$name"
     mkdir -p "$dir" || die "Can't create $dir"
 
     # macOS won't let an app read ~/Downloads, ~/Desktop or ~/Documents (it fails with
@@ -704,8 +747,8 @@ cmd_launcher() {  # cmd_launcher [DIR]: a small .app that runs `altium-wine.sh r
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>Altium Designer (Wine)</string>
-    <key>CFBundleIdentifier</key><string>local.altium-wine.launcher</string>
+    <key>CFBundleName</key><string>${name%.app}</string>
+    <key>CFBundleIdentifier</key><string>local.altium-wine.launcher.$(echo "$WORK_ROOT" | shasum | cut -c1-8)</string>
     <key>CFBundleExecutable</key><string>altium-wine-launcher</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>1.0</string>
@@ -720,8 +763,9 @@ EOF
         echo "# Generated by altium-wine.sh launcher on $(date)."
         printf 'export ALTIUM_WINE_ROOT=%q\n' "$WORK_ROOT"
         printf 'KIT=%q\n' "$kit"
+        printf 'EXE=%q\n' "$exe_name"
         cat <<'EOF'
-if pgrep -f "$ALTIUM_WINE_ROOT/wine" >/dev/null 2>&1 && pgrep -f 'X2\.EXE' >/dev/null 2>&1; then
+if pgrep -f "$ALTIUM_WINE_ROOT/wine" >/dev/null 2>&1 && pgrep -f "$EXE" >/dev/null 2>&1; then
     osascript -e 'display notification "Altium Designer is already running." with title "Altium Designer (Wine)"'
     exit 0
 fi
@@ -757,10 +801,12 @@ cmd_uninstall() {
     fi
     altium_running && die "Altium is running. Close it first."
     if select_wine; then WINEPREFIX="$PREFIX" "$WINESERVER" -k 2>/dev/null; sleep 1; fi
-    local app="$HOME/Applications/$LAUNCHER_NAME"
-    if [ -f "$app/Contents/MacOS/altium-wine-launcher" ] && grep -qF "$WORK_ROOT" "$app/Contents/MacOS/altium-wine-launcher"; then
+    local app
+    for app in "$HOME/Applications/Altium Designer"*"(Wine).app"; do  # only launchers for this root
+        [ -f "$app/Contents/MacOS/altium-wine-launcher" ] || continue
+        grep -qxF "export ALTIUM_WINE_ROOT=$(printf %q "$WORK_ROOT")" "$app/Contents/MacOS/altium-wine-launcher" || continue
         rm -rf "$app" && say "Removed $app"
-    fi
+    done
     rm -rf "$WORK_ROOT" && say "Removed $WORK_ROOT"
     case "$KIT_DIR" in "$WORK_ROOT"/*) ;; *) say "The kit itself is still at $KIT_DIR" ;; esac
 }
