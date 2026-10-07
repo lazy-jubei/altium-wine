@@ -8,7 +8,7 @@ preserve the existing event-queue and semaphore paths for worker threads.
 
 --- a/dlls/winemac.drv/cocoa_event.m
 +++ b/dlls/winemac.drv/cocoa_event.m
-@@ -493,3 +493,10 @@
+@@ -493,6 +493,13 @@
      WineEventQueue* queue = threadDict[WineEventQueueThreadDictionaryKey];
      dispatch_semaphore_t semaphore = NULL;
      __block BOOL finished;
@@ -19,3 +19,6 @@ preserve the existing event-queue and semaphore paths for worker threads.
 +        block();
 +        return;
 +    }
+ 
+     if (!queue)
+     {
