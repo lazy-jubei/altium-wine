@@ -18,7 +18,7 @@
 #   --clean         delete the source/build trees and exit
 #
 # What changes compared with the stock bundle (lib/wine/...):
-#   x86_64-unix/winemac.so      patches/0000 (wine-staging no-flicker, as in the stock build) + 0002 + 0007 + 0012 + 0017 + 0020 + 0021 + 0023
+#   x86_64-unix/winemac.so      patches/0000 (wine-staging no-flicker, as in the stock build) + 0002 + 0007 + 0012 + 0017 + 0020 + 0021 + 0023 + 0029
 #   x86_64-windows/d2d1.dll     patches/0003
 #   x86_64-windows/winhttp.dll  patches/0004
 #   x86_64-windows/msado15.dll, i386-windows/msado15.dll  patches/0006 (Altium 17's library server)
@@ -63,7 +63,7 @@ sha256_of() { shasum -a 256 "$1" | awk '{print $1}'; }
 WINE_VER="11.16"
 WINE_SRC_URL="https://dl.winehq.org/wine/source/11.x/wine-$WINE_VER.tar.xz"
 WINE_SRC_SHA256="c66e2090343dcd727f7f7fd2f87ee0bfb0b118790c1d745ab7b8a4c3a4197f2f"
-SOURCE_PATCHES="0000-staging-winemac-no-flicker.patch 0002-winemac-clip-client-surfaces.patch 0003-d2d1-fast-redraw.patch 0004-winhttp-infinite-receive-timeout.patch 0006-msado15-command-parameter-properties.patch 0007-winemac-activate-blocking-popup.patch 0008-d3dx9-staging-sync.patch 0009-d3dx9-effect-setrawvalue-struct-arrays.patch 0010-kernelbase-altiumms-pipe-write-event.patch 0011-kernelbase-staging-sync.patch 0012-winemac-separate-modal-owner.patch 0017-winemac-altium-panel-close-activation.patch 0020-winemac-altium-panel-queued-clicks.patch 0021-winemac-srgb-altium-windows.patch 0014-server-staging-sync.patch 0005-server-wakeup-epipe.patch 0013-server-signed-dpi-scaling.patch 0016-d3d9-staging-sync.patch 0015-d3d9-ad17-buffer-uploads.patch 0018-wined3d-staging-sync.patch 0019-d3d9-ring-upload-hints.patch 0022-wined3d-ad17-immediate-uploads.patch 0023-winemac-schematic-performance.patch"
+SOURCE_PATCHES="0000-staging-winemac-no-flicker.patch 0002-winemac-clip-client-surfaces.patch 0003-d2d1-fast-redraw.patch 0004-winhttp-infinite-receive-timeout.patch 0006-msado15-command-parameter-properties.patch 0007-winemac-activate-blocking-popup.patch 0008-d3dx9-staging-sync.patch 0009-d3dx9-effect-setrawvalue-struct-arrays.patch 0010-kernelbase-altiumms-pipe-write-event.patch 0011-kernelbase-staging-sync.patch 0012-winemac-separate-modal-owner.patch 0017-winemac-altium-panel-close-activation.patch 0020-winemac-altium-panel-queued-clicks.patch 0021-winemac-srgb-altium-windows.patch 0014-server-staging-sync.patch 0005-server-wakeup-epipe.patch 0013-server-signed-dpi-scaling.patch 0016-d3d9-staging-sync.patch 0015-d3d9-ad17-buffer-uploads.patch 0018-wined3d-staging-sync.patch 0019-d3d9-ring-upload-hints.patch 0022-wined3d-ad17-immediate-uploads.patch 0023-winemac-schematic-performance.patch 0029-winemac-main-thread-reentry.patch"
 # built file | place in the bundle (relative to lib/wine) | name in a modules directory
 TARGETS="dlls/winemac.drv/winemac.so|x86_64-unix/winemac.so|winemac.so
 dlls/d2d1/x86_64-windows/d2d1.dll|x86_64-windows/d2d1.dll|d2d1.dll

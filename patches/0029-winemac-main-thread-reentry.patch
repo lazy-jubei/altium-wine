@@ -1,0 +1,24 @@
+From: lazy-jubei
+Subject: [PATCH] winemac: run synchronous main-thread callbacks inline on the main thread
+
+OpenGL redraw callbacks can call OnMainThread from the Cocoa main thread.
+Queueing the block and waiting there prevents the same run loop from servicing
+it, hanging the entire UI. Execute it inline when already on the main thread;
+preserve the existing event-queue and semaphore paths for worker threads.
+
+--- a/dlls/winemac.drv/cocoa_event.m
++++ b/dlls/winemac.drv/cocoa_event.m
+@@ -493,6 +493,13 @@
+     WineEventQueue* queue = threadDict[WineEventQueueThreadDictionaryKey];
+     dispatch_semaphore_t semaphore = NULL;
+     __block BOOL finished;
++
++    /* Cocoa callbacks can reach this helper while already on the main thread. */
++    if ([NSThread isMainThread])
++    {
++        block();
++        return;
++    }
+ 
+     if (!queue)
+     {

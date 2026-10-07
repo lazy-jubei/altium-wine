@@ -32,6 +32,7 @@ retained, including its FreeType, Vulkan and Staging support.
 `wined3d.dll` retains the four enabled Staging wined3d patchsets in `0018`.
 `0019` preserves AD17's dynamic ring upload hints across D3D9 and WineD3D;
 `0022` queues immediate-draw streaming uploads for AD17.
+`0029` prevents synchronous Cocoa callbacks from waiting on the main thread itself.
 The 64-bit graphics modules keep the stock renderer.
 `wow64cpu.dll` and `user32.dll` are transformed from the checksum-pinned stock
 bundle by two Python patchers in `patches/`. The server is compiled from source. No other stock modules are

@@ -6,16 +6,16 @@ Run the commands below from the repository root.
 
 ```bash
 bash build-patched-wine.sh --export ~/AltiumWine/build/modules-export   # 13 changed files + SHA256SUMS
-bash make-release.sh --version v1.1.0 \
-     --url https://github.com/lazy-jubei/altium-wine/releases/download/v1.1.0 \
+bash make-release.sh --version v1.1.1 \
+     --url https://github.com/lazy-jubei/altium-wine/releases/download/v1.1.1 \
      --modules ~/AltiumWine/build/modules-export
 ```
 
-`make-release.sh` writes `dist/v1.1.0/` locally:
+`make-release.sh` writes `dist/v1.1.1/` locally:
 
 - `install.sh`, with the URL and the two archive checksums filled in;
-- `altium-wine-kit-v1.1.0.tar.gz`;
-- `altium-wine-modules-v1.1.0.tar.gz`;
+- `altium-wine-kit-v1.1.1.tar.gz`;
+- `altium-wine-modules-v1.1.1.tar.gz`;
 - `SHA256SUMS`.
 
 Uploading those files to the URL is a separate step. Include the source archives described in [docs/wine-sources.md](wine-sources.md), and add their hashes to `SHA256SUMS`. Then `curl -fsSL <url>/install.sh | bash` works.
@@ -76,11 +76,13 @@ Environment variables:
 | Altium Designer 17's PCB 3D view draws the board and every 3D body black (the 2D view and the shadows are fine). The 3D effect sets its lights (`SCSceneLights`, an array of two structures of five float4) with `ID3DXEffect::SetRawValue`; Wine's d3dx9 returned E_NOTIMPL for an array of structures (`Unhandled structure member parameter class D3DXPC_STRUCT`, about 3,000 times a session), so the lights' pixel-shader constants stayed zero. | `patches/0009-d3dx9-effect-setrawvalue-struct-arrays.patch`: set the array's elements one by one. It sits on `patches/0008-d3dx9-staging-sync.patch`, which brings plain Wine 11.16's d3dx9 up to the code in the stock wine-staging bundle (it already has SetRawValue for vectors and structures, `D3DXComputeTangent` and more). | `d3dx9_43.dll` (32-bit) |
 | AD17 stalls while loading STEP models after AltiumMS exits with `EWriteError: Stream write error`. It writes synchronously to an overlapped duplex pipe; another read can signal the shared handle before the write completes, returning `ERROR_IO_PENDING` to Delphi's stream writer. | `patches/0010-kernelbase-altiumms-pipe-write-event.patch`: use a private completion event for NULL-overlapped pipe writes in `AltiumMS.exe`. Other applications and ordinary overlapped writes retain their existing behavior. | `kernelbase.dll` (32-bit) |
 | Schematic scrolling lags by seconds. Wine's Direct2D swapped the whole D3D11 state twice per primitive (about 8,000 per redraw), re-triangulated every glyph each frame and made new GPU buffers for every shape. | `patches/0003-d2d1-fast-redraw.patch`: keeps D2D state bound between draws, caches glyph geometry per device and buffers per geometry, and fast-paths FillRectangle. `WINE_D2D_LAZY_STATE=0` turns the state part off. | `d2d1.dll` |
+| Vault searches or model previews freeze the entire AD17 UI. A Cocoa redraw called `OnMainThread` from the main thread, then waited for its own queued callback. | `patches/0029-winemac-main-thread-reentry.patch`: execute synchronous callbacks inline when already on the main thread. Worker-thread dispatch and event processing stay unchanged. | `winemac.so` |
 
 `winemac.so` is built with `patches/0000-staging-winemac-no-flicker.patch`, which is wine-staging's own patch and is in the stock build too, so nothing from staging is lost.
 
 Verification:
 
+- Main-thread dispatch: the original helper deadlocks on main-thread reentry; `0029` passes 300 direct, nested and worker cases, plus AD17 Vault searches, model previews and repeated resizing.
 - Wine's d2d1 conformance tests (5,553 checks) give identical results with and without 0003, both single- and multi-threaded. Eleven test groups that crash under DXVK with stock Wine too (DC, HWND and WIC targets) were skipped.
 - The winhttp notification tests are unchanged.
 - A local server that delays headers by 25 s fails at 21.0 s with stock winhttp and succeeds with 0004.

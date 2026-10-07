@@ -178,3 +178,14 @@ Coordinates above assume the tested 2560-point window; captures are scaled to
 1280 pixels wide. Count `change` timestamps from 1.5 to 19.5 seconds and divide
 by 18. Report completed CAD frames separately from compositor interpolation
 and from MoltenVK's GPU presentation statistics.
+
+## Cocoa main-thread dispatch
+
+On macOS with Rosetta, test `0029` against the actual Wine helper:
+
+```bash
+python3 diagnostics/main-thread-reentry.py /path/to/patched/dlls/winemac.drv/cocoa_event.m \
+  --baseline /path/to/unpatched/dlls/winemac.drv/cocoa_event.m
+```
+
+The baseline must deadlock. The patched helper must finish direct, nested, semaphore-worker and kqueue-worker calls.
