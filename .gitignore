@@ -21,3 +21,9 @@ wine-patched/
 
 # Local trial output.
 *.out
+
+tools/VaultDpiFix/bin/
+tools/VaultDpiFix/obj/
+
+/diagnostics/VaultCodecCheck/bin/
+/diagnostics/VaultCodecCheck/obj/

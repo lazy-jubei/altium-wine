@@ -1,0 +1,15 @@
+--- a/dlls/gdiplus/font.c
++++ b/dlls/gdiplus/font.c
+@@ -552,7 +552,11 @@
+     stat = GdipGetDpiY((GpGraphics *)graphics, &dpi);
+     if (stat != Ok) return stat;
+ 
+-    *height = pixels_to_units(font_height, graphics->unit, dpi, graphics->printer_display);
++    stat = GdipGetFontHeightGivenDPI(font, dpi, &font_height);
++    if (stat != Ok) return stat;
++
++    *height = font->unit == UnitPixel ? font_height :
++        pixels_to_units(font_height, graphics->unit, dpi, graphics->printer_display);
+ 
+     TRACE("%s,%ld(unit %d) => %f\n",
+           debugstr_w(font->family->FamilyName), font->otm.otmTextMetrics.tmHeight, graphics->unit, *height);

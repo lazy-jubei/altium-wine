@@ -189,3 +189,13 @@ python3 diagnostics/main-thread-reentry.py /path/to/patched/dlls/winemac.drv/coc
 ```
 
 The baseline must deadlock. The patched helper must finish direct, nested, semaphore-worker and kqueue-worker calls.
+
+## Font metrics
+
+`gdiplus-font-height.c` checks font height against the specified drawing surface DPI and page unit, including pixel fonts, across 90 cases. Build with either MinGW architecture and `-luser32`; run under Wine. An optional DLL path uses that GDI+ implementation for comparison. Original Wine passes 30/90 cases; patch `0030` and native GDI+ pass 90/90. Both patched Wine architectures pass.
+
+`gdiplus-text-bounds.c` checks 90 single-line bounds against Microsoft GDI+ reference measurements for Verdana, Arial and Tahoma, regular/bold, 9/12 points and 12 pixels, 96/144/192 DPI, and pixel/point/millimeter graphics page units. Build with MinGW and `-luser32`; both patched Wine architectures pass. Its 0.11-pixel tolerance allows GDI rounding. Width, fallback glyphs and line-breaking compatibility are outside this probe.
+
+`VaultCodecCheck` is a .NET Framework 4.8/x86 probe for AD17’s parameter decoder. Build its project, then run the executable under Wine with a local `VaultExplorer.Common.dll` path (and optionally the AD17 `System` directory). It checks valid encodings, literal/truncated underscores and the two legacy suffixes: original 7/13, corrected 13/13. No vendor assemblies are included.
+
+`tools/VaultDpiFix` is a separate local AD17.1 layout correction; see the technical notes. It never overwrites its input or accepts an unknown Altium assembly.

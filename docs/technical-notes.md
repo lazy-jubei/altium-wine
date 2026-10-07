@@ -5,9 +5,9 @@ Run the commands below from the repository root.
 ## Making a release
 
 ```bash
-bash build-patched-wine.sh --export ~/AltiumWine/build/modules-export   # 13 changed files + SHA256SUMS
-bash make-release.sh --version v1.1.1 \
-     --url https://github.com/lazy-jubei/altium-wine/releases/download/v1.1.1 \
+bash build-patched-wine.sh --export ~/AltiumWine/build/modules-export   # 15 changed files + SHA256SUMS
+bash make-release.sh --version v1.1.2 \
+     --url https://github.com/lazy-jubei/altium-wine/releases/download/v1.1.2 \
      --modules ~/AltiumWine/build/modules-export
 ```
 
@@ -61,7 +61,7 @@ Environment variables:
 
 ### Wine fixes (`~/AltiumWine/wine-patched`)
 
-`build-patched-wine.sh` copies the stock bundle and changes thirteen files. Everything else stays byte-identical to the tested Gcenx build.
+`build-patched-wine.sh` copies the stock bundle and changes fifteen files. Everything else stays byte-identical to the tested Gcenx build.
 
 | Problem | Fix | File changed |
 |---|---|---|
@@ -77,11 +77,15 @@ Environment variables:
 | AD17 stalls while loading STEP models after AltiumMS exits with `EWriteError: Stream write error`. It writes synchronously to an overlapped duplex pipe; another read can signal the shared handle before the write completes, returning `ERROR_IO_PENDING` to Delphi's stream writer. | `patches/0010-kernelbase-altiumms-pipe-write-event.patch`: use a private completion event for NULL-overlapped pipe writes in `AltiumMS.exe`. Other applications and ordinary overlapped writes retain their existing behavior. | `kernelbase.dll` (32-bit) |
 | Schematic scrolling lags by seconds. Wine's Direct2D swapped the whole D3D11 state twice per primitive (about 8,000 per redraw), re-triangulated every glyph each frame and made new GPU buffers for every shape. | `patches/0003-d2d1-fast-redraw.patch`: keeps D2D state bound between draws, caches glyph geometry per device and buffers per geometry, and fast-paths FillRectangle. `WINE_D2D_LAZY_STATE=0` turns the state part off. | `d2d1.dll` |
 | Vault searches or model previews freeze the entire AD17 UI. A Cocoa redraw called `OnMainThread` from the main thread, then waited for its own queued callback. | `patches/0029-winemac-main-thread-reentry.patch`: execute synchronous callbacks inline when already on the main thread. Worker-thread dispatch and event processing stay unchanged. | `winemac.so` |
+| Vault labels clip at 200% scaling. AD17’s shared controls mix missing DPI baselines, fixed row heights and repeated inherited scaling. Wine also reports incorrect font heights and omits fractional text bounds and vertical overhang. | `tools/VaultDpiFix` corrects shared Vault layout and search containers locally, with exact AD17.1 assembly hash guards. `0030` fixes font heights; `0032` corrects measured text height; `0031` preserves Staging optimizations. | Local AD17 Vault controls; `gdiplus.dll` (both architectures) |
 
 `winemac.so` is built with `patches/0000-staging-winemac-no-flicker.patch`, which is wine-staging's own patch and is in the stock build too, so nothing from staging is lost.
 
+The source build and v1.1.2 modules include the GDI+ font-metrics fixes below.
+
 Verification:
 
+- Font heights: 90 DPI/unit cases match native GDI+ and pass in both Wine architectures. Text bounds also pass 90 native-reference font/style/DPI/unit cases in both architectures. AD17 menus, headers, summary rows, empty states and resizing were checked at 192 DPI. The patcher verifies 532 shared-control, 548 search and 1,304 common methods; only four layout methods, two pagination defaults, one search initializer and one parameter decoder change. The decoder passes 13 malformed/encoded/suffix cases; the original passes 7.
 - Main-thread dispatch: the original helper deadlocks on main-thread reentry; `0029` passes 300 direct, nested and worker cases, plus AD17 Vault searches, model previews and repeated resizing.
 - Wine's d2d1 conformance tests (5,553 checks) give identical results with and without 0003, both single- and multi-threaded. Eleven test groups that crash under DXVK with stock Wine too (DC, HWND and WIC targets) were skipped.
 - The winhttp notification tests are unchanged.
@@ -100,6 +104,16 @@ Verification:
 ### WebView2 watchdog
 
 WebView2's `VideoCaptureThread` spins forever under Wine and floods `wineserver`, which cut PCB panning from about 130 fps to about 50. `run` ends Altium's WebView2 browser 20 s after it starts. Blocking it from starting instead makes Altium show "File not found (0x80070002)". `KILL_WEBVIEW2=0` turns the watchdog off.
+
+### AD17 Vault text scaling
+
+AD17.1's shared Vault controls have inconsistent scaling baselines. The local patch enables header scaling, supplies a 96-DPI baseline for dynamic message and summary controls, and scales the summary row constraints. The search view uses one DPI baseline and lets its parent own split-container layout; inherited scaling otherwise enlarges padding until it consumes the result grid. New searches default to paged results rather than the original default of loading every page, which imports thousands of parts before displaying the grid. Explicit saved choices and the existing “Load all pages” menu option remain available; turn that option off in an existing profile if it was previously enabled.
+
+Build `tools/VaultDpiFix/VaultDpiFix.csproj` with a .NET SDK. Run `VaultDpiFix.exe ORIGINAL_DLL OUTPUT_DLL` under the AD17 prefix, separately for unmodified `VaultExplorer.Controls.dll`, `Plugins.AdvancedSearch.dll` and `VaultExplorer.Common.dll`. An optional third argument supplies the AD17 `System` directory for dependency resolution. The tool rejects unknown builds, writes separate outputs and verifies the changed methods. Close AD17, back up the installed assemblies, then replace them with the outputs. Restore the backups to undo it. Altium assemblies are not distributed. Editing the signed Common assembly invalidates its vendor signature; the tested local Wine prefix loads it as full-trust. Keep its original backup.
+
+The shared parameter decoder also now preserves literal/truncated underscores instead of treating every underscore as a two-digit hex escape. Previously a returned parameter name could abort the entire built-in Vault search with a `Substring` exception.
+
+Wine patches `0030` and `0032` correct the underlying font metrics used by layout. They do not rewrite captions or change point-size fonts. Published v1.1.1 modules predate these fixes.
 
 ### AD17 CefSharp browser
 

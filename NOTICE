@@ -52,3 +52,7 @@ patches/0023-winemac-schematic-performance.patch
 Original parallel/native copy, pan compositing and input fixes by lazy-jubei.
 The leading dib_info layout derives from Wine's dibdrv.h, Copyright 2011 Huw Davies.
 GNU LGPL 2.1 or later.
+
+patches/0031-gdiplus-staging-sync.patch
+Wine Staging's two GDI+ image-scaling performance patches by Dmitry Timoshkov,
+retained with their original author and commit metadata. GNU LGPL 2.1 or later.

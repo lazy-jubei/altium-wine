@@ -1,0 +1,30 @@
+--- a/dlls/gdiplus/graphics.c
++++ b/dlls/gdiplus/graphics.c
+@@ -6321,7 +6321,27 @@
+     if (codepointsfitted) *codepointsfitted = glyphs;
+ 
+     if (lines)
++    {
++        REAL line_height, measured_height;
++        GpUnit measure_unit = font->unit == UnitPixel ? UnitPixel : graphics->unit;
+         bounds->Width += margin_x * 2.0;
++        /* GDI's integer text extent omits GDI+'s fractional line spacing and
++         * default vertical overhang. Consumers use these bounds for layout. */
++        if (GdipGetFontHeight(font, graphics, &line_height) == Ok)
++        {
++            /* Only preceding lines include the font's external line gap. */
++            measured_height = (lines - 1) * line_height +
++                (font->family->ascent + font->family->descent) * font->emSize /
++                font->family->em_height * units_scale(font->unit, measure_unit,
++                    graphics->yres, graphics->printer_display);
++            if (!format || !format->generic_typographic)
++                measured_height += font->emSize / 8.0f *
++                    units_scale(font->unit, measure_unit, graphics->yres, graphics->printer_display);
++            if (rect->Height > 0.0f && (!format || !(format->attr & StringFormatFlagsNoClip)))
++                measured_height = min(measured_height, rect->Height);
++            bounds->Height = max(bounds->Height, measured_height);
++        }
++    }
+ 
+     if (lines && format)
+     {
