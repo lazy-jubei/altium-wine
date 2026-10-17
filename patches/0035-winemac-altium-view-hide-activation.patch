@@ -1,0 +1,161 @@
+From: lazy-jubei
+Subject: [PATCH] winemac: deactivate Altium panels before their focused view hides
+
+Closing a floating panel can detach its TViewComponent before the panel is
+hidden. Its later deactivation then reaches an orphaned Delphi view. Native
+mouse-release interception misses injected, keyboard and scripted closes and
+requires dispatching queued mouse messages recursively.
+
+Transfer activation when the focused view begins hiding, before its parent is
+removed. Keep this limited to Altium, an active TClientBarControl and an enabled,
+visible owner on the current thread. Leave inactive views, document tabs and
+other applications alone. Replace the earlier mouse-specific workaround.
+Apply after 0034.
+
+--- a/dlls/winemac.drv/macdrv.h
++++ b/dlls/winemac.drv/macdrv.h
+@@ -115,4 +115,5 @@
+     WORD                        keyc2vkey[128];
+     WORD                        keyc2scan[128];
++    BOOL                        deactivating_altium_view;
+ };
+ 
+--- a/dlls/winemac.drv/mouse.c
++++ b/dlls/winemac.drv/mouse.c
+@@ -878,62 +878,4 @@
+ }
+ 
+-/* Complete the activation transfer before Altium's client-side Close button
+- * detaches its view. Its floating panel otherwise remains active until the next
+- * native click, and Delphi then tries to deactivate an orphaned control. */
+-static void deactivate_altium_panel_before_close(HWND hwnd, const macdrv_event *event)
+-{
+-    const WCHAR *image = RtlGetCurrentPeb()->ProcessParameters->ImagePathName.Buffer;
+-    const WCHAR *base = wcsrchr(image, '\\');
+-    WCHAR class_buffer[64] = {0};
+-    UNICODE_STRING class_name = {0, sizeof(class_buffer), class_buffer};
+-    HWND button, owner;
+-    RECT panel_rect, button_rect;
+-    UINT context, dpi, count;
+-    MSG msg;
+-    BOOL closing = FALSE;
+-
+-    if (event->mouse_button.pressed || event->mouse_button.button != 0
+-            || (wcsicmp(base ? base + 1 : image, u"DXP.EXE") &&
+-                wcsicmp(base ? base + 1 : image, u"X2.EXE"))) return;
+-    NtUserGetClassName(hwnd, FALSE, &class_name);
+-    if (wcscmp(class_buffer, u"TClientBarControl")) return;
+-    owner = NtUserGetWindowRelative(hwnd, GW_OWNER);
+-    if (!owner || !NtUserIsWindowEnabled(owner) || !NtUserIsWindowVisible(owner)
+-            || NtUserGetWindowThread(owner, NULL) != GetCurrentThreadId()) return;
+-
+-    context = NtUserSetThreadDpiAwarenessContext(NTUSER_DPI_PER_MONITOR_AWARE_V2);
+-    button = NtUserWindowFromPoint(event->mouse_button.x, event->mouse_button.y);
+-    if (button && NtUserGetAncestor(button, GA_ROOT) == hwnd)
+-    {
+-        memset(class_buffer, 0, sizeof(class_buffer));
+-        NtUserGetClassName(button, FALSE, &class_name);
+-        dpi = NtUserGetDpiForWindow(hwnd);
+-        if (!wcscmp(class_buffer, u"TXPButtonEx") && NtUserGetWindowRect(hwnd, &panel_rect, dpi)
+-                && NtUserGetWindowRect(button, &button_rect, dpi))
+-            closing = button_rect.top - panel_rect.top < (int)(24 * dpi / 96)
+-                    && panel_rect.right - button_rect.right < (int)(12 * dpi / 96);
+-    }
+-    NtUserSetThreadDpiAwarenessContext(context);
+-    if (!closing) return;
+-
+-    /* Native events can outrun Windows' hardware-message queue. Finish the
+-     * panel's earlier clicks (including Close down) before transferring focus;
+-     * otherwise a delayed down would activate it again after this transfer.
+-     * The current native event prevents nested macdrv event processing. */
+-    for (count = 0; count < 32 && NtUserPeekMessage(&msg, hwnd,
+-            WM_MOUSEFIRST, WM_MOUSELAST, PM_REMOVE | PM_NOYIELD); ++count)
+-    {
+-        NtUserDispatchMessage(&msg);
+-    }
+-    NtUserSetThreadDpiAwarenessContext(context);
+-    if (hwnd != get_active_window() || !NtUserIsWindowVisible(hwnd)
+-            || !NtUserIsWindowEnabled(owner)) return;
+-    TRACE("transferring Altium panel %p activation to owner %p before Close mouse-up\n", hwnd, owner);
+-    if (NtUserGetForegroundWindow() == hwnd)
+-        NtUserSetForegroundWindowInternal(owner);
+-    else
+-        NtUserSetActiveWindow(owner);
+-}
+-
+ void macdrv_mouse_button(HWND hwnd, const macdrv_event *event)
+ {
+@@ -941,5 +883,4 @@
+     WORD data = 0;
+ 
+-    deactivate_altium_panel_before_close(hwnd, event);
+     TRACE("win %p button %d %s at (%d,%d) time %lu (%lu ticks ago)\n", hwnd, event->mouse_button.button,
+           (event->mouse_button.pressed ? "pressed" : "released"),
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1537,4 +1537,46 @@
+ 
+ 
++/* Altium detaches a floating panel's view before hiding the panel itself.
++ * Deactivate the panel while its focused view still has a parent. Doing this
++ * at the view's hide operation covers native, injected and scripted closes
++ * without dispatching queued mouse messages out of the application's loop. */
++static void deactivate_altium_view_before_hide(HWND hwnd, UINT swp_flags)
++{
++    struct macdrv_thread_data *thread_data = macdrv_thread_data();
++    const WCHAR *image = RtlGetCurrentPeb()->ProcessParameters->ImagePathName.Buffer;
++    const WCHAR *base = wcsrchr(image, '\\');
++    WCHAR buffer[64] = {0};
++    UNICODE_STRING name = {0, sizeof(buffer), buffer};
++    HWND panel, owner, focus;
++
++    if (!(swp_flags & SWP_HIDEWINDOW) || !thread_data || thread_data->deactivating_altium_view
++            || (wcsicmp(base ? base + 1 : image, u"DXP.EXE") &&
++                wcsicmp(base ? base + 1 : image, u"X2.EXE"))) return;
++    NtUserGetClassName(hwnd, FALSE, &name);
++    if (wcscmp(buffer, u"TViewComponent")) return;
++    panel = NtUserGetAncestor(hwnd, GA_ROOT);
++    if (panel != get_active_window() || panel == hwnd) return;
++    focus = get_focus();
++    /* A container may already be hidden while this view still owns focus. */
++    if (focus != hwnd && !NtUserIsChild(hwnd, focus)) return;
++    memset(buffer, 0, sizeof(buffer));
++    NtUserGetClassName(panel, FALSE, &name);
++    if (wcscmp(buffer, u"TClientBarControl")) return;
++    owner = NtUserGetWindowRelative(panel, GW_OWNER);
++    if (!owner || !NtUserIsWindowEnabled(owner) || !NtUserIsWindowVisible(owner)
++            || NtUserGetWindowThread(owner, NULL) != GetCurrentThreadId()) return;
++
++    TRACE("transferring Altium panel %p activation to owner %p before hiding view %p\n",
++          panel, owner, hwnd);
++    /* Deactivation handlers may themselves hide the view. */
++    thread_data->deactivating_altium_view = TRUE;
++    if (NtUserGetForegroundWindow() == panel)
++        NtUserSetForegroundWindowInternal(owner);
++    else
++        NtUserSetActiveWindow(owner);
++    thread_data->deactivating_altium_view = FALSE;
++}
++
++
+ /***********************************************************************
+  *              SetWindowStyle   (MACDRV.@)
+@@ -1549,4 +1591,7 @@
+ 
+     if (hwnd == NtUserGetDesktopWindow()) return;
++    /* ShowWindow only toggles WS_VISIBLE when an ancestor is already hidden. */
++    if (offset == GWL_STYLE && (style->styleOld & WS_VISIBLE) && !(style->styleNew & WS_VISIBLE))
++        deactivate_altium_view_before_hide(hwnd, SWP_HIDEWINDOW);
+     if (!(data = get_win_data(hwnd))) return;
+ 
+@@ -1751,6 +1796,9 @@
+ BOOL macdrv_WindowPosChanging(HWND hwnd, UINT swp_flags, BOOL shaped, const struct window_rects *rects)
+ {
+-    struct macdrv_win_data *data = get_win_data(hwnd);
++    struct macdrv_win_data *data;
+     BOOL ret = FALSE;
++
++    deactivate_altium_view_before_hide(hwnd, swp_flags);
++    data = get_win_data(hwnd);
+ 
+     TRACE("hwnd %p, swp_flags %04x, shaped %u, rects %s\n", hwnd, swp_flags, shaped, debugstr_window_rects(rects));

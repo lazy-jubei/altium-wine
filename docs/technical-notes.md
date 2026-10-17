@@ -234,26 +234,23 @@ Patch `0012` restores separately owned modal windows after Cocoa activation,
 after the native window order has been restored. AD17's error dialog remains
 visible above its separately owned main form when switching back from Finder.
 
-Patch `0017` transfers activation before the Close mouse-up on an active AD17
-floating panel. Otherwise Delphi deactivates its embedded view after it has been
-detached, raising *Control "View…" has no parent window* on the next viewport
-click. Close/click tests pass for Sheet, SCH Inspector, SCH List and Storage
-Manager over a PCB. Ordinary Open dialogs also retain their ordering after
-switching applications.
+Patch `0035` replaces the mouse-specific panel fixes (`0017`, `0020`, `0034`).
+Altium can detach a floating panel's embedded view before deactivating its window,
+raising *Control "View…" has no parent window*. The driver transfers activation
+when the focused `TViewComponent` hides, while its parent still exists. Both
+window-position changes and visibility-only changes under hidden ancestors are
+handled.
+This also covers Windows-injected input and scripted closes without recursively
+dispatching mouse messages. The enabled owner must be visible and on the same
+thread; inactive panels and document tabs retain normal handling. A per-thread
+guard prevents re-entry from deactivation callbacks.
 
-Patch `0020` covers rapid clicks: the native Close release can arrive before
-Windows handles the panel's earlier mouse messages. It drains those panel
-messages before transferring activation, so a delayed click cannot reactivate
-the detached view. Rapid, held and inactive-panel Close tests pass; other input
-paths retain their normal handling.
-
-Patch `0034` applies the same guarded activation transfer to modern Altium
-(`X2.EXE`). AD26 also detaches a floating panel's embedded view during Close;
-without the transfer, the subsequent deactivation can raise the same parent-window
-error. The panel class, caption button, enabled owner, thread and DPI checks remain
-unchanged.
-AD26 regression checks covered two rapid and one held Messages-panel close,
-returning to the PCB without the previously reproduced parent-window exception.
+`diagnostics/panel-view-lifetime.c` reproduces the ordering in a disposable Wine
+prefix without Altium or CAD files. Build it as `DXP.EXE` or `X2.EXE`; run with
+`--baseline` against the previous driver and `--fixed` against the updated driver.
+It checks both hide APIs, hidden ancestors, nested callbacks, inactive panels and
+disabled owners. AD26 checks also covered the startup Messages panel, native
+and injected clicks, direct button messages, and discarding an unsaved PCB.
 
 ## Building the patched Wine
 
