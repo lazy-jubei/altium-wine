@@ -5,7 +5,7 @@ Run the commands below from the repository root.
 ## Making a release
 
 ```bash
-bash build-patched-wine.sh --export ~/AltiumWine/build/modules-export   # 15 changed files + SHA256SUMS
+bash build-patched-wine.sh --export ~/AltiumWine/build/modules-export   # 16 changed files + SHA256SUMS
 bash make-release.sh --version v1.1.2 \
      --url https://github.com/lazy-jubei/altium-wine/releases/download/v1.1.2 \
      --modules ~/AltiumWine/build/modules-export
@@ -61,7 +61,7 @@ Environment variables:
 
 ### Wine fixes (`~/AltiumWine/wine-patched`)
 
-`build-patched-wine.sh` copies the stock bundle and changes fifteen files. Everything else stays byte-identical to the tested Gcenx build.
+`build-patched-wine.sh` copies the stock bundle and changes sixteen files. Everything else stays byte-identical to the tested Gcenx build.
 
 | Problem | Fix | File changed |
 |---|---|---|
@@ -103,7 +103,7 @@ Verification:
 
 ### WebView2 watchdog
 
-WebView2's `VideoCaptureThread` spins forever under Wine and floods `wineserver`, which cut PCB panning from about 130 fps to about 50. `run` ends Altium's WebView2 browser 20 s after it starts. Blocking it from starting instead makes Altium show "File not found (0x80070002)". `KILL_WEBVIEW2=0` turns the watchdog off.
+WebView2's `VideoCaptureThread` spins forever under Wine and floods `wineserver`, which cut PCB panning from about 130 fps to about 50. The watchdog waits for two responsive, idle editor checks before ending the browser through Windows process APIs. The old fixed delay and global Unix-process cleanup could interrupt startup or affect later sessions. Cleanup now targets only this prefix's editor-owned browser processes, at least 20 seconds old, and is bound to the editor's process ID and creation time. Modal dialogs and busy editors defer it. If the readiness helper is missing, the browser is left running. Blocking it from starting instead makes Altium show "File not found (0x80070002)". `KILL_WEBVIEW2=0` turns the watchdog off.
 
 ### Native app control
 

@@ -613,24 +613,40 @@ cmd_run() {
     launch_logged altium "$(dirname "$exe")" "$(basename "$exe")" "$@"
 }
 
-etime_seconds() {  # etime_seconds PID -> seconds the process has been running
-    ps -o etime= -p "$1" 2>/dev/null | awk -F'[-:]' '{n=NF; s=$n+60*$(n-1); if(n>2)s+=3600*$(n-2); if(n>3)s+=86400*$(n-3); print s}'
-}
-
 # Altium's Microsoft Edge WebView2 browser (it only drives the Home Page, which renders blank
 # under Wine) has a thread whose message loop spins forever under Wine and floods wineserver,
 # which more than halves Altium's frame rate (PCB pan measured at ~50 fps with it, ~130 fps
-# without). Ending it after Altium has finished starting causes no errors; blocking it from
-# starting does (Altium shows "File not found"). KILL_WEBVIEW2=0 turns this off.
+# without). Wait for the editor to respond and become idle before ending it: a fixed delay
+# can interrupt a large board's startup and cause "Invalid window handle". Blocking the
+# browser from starting causes "File not found". KILL_WEBVIEW2=0 turns this off.
 webview2_watchdog() {
+    local readiness_helper="$WINE_BIN_DIR/altium-ui-ready.exe"
+    local ready_polls=0 started=$SECONDS status ui_pids ui_cpu identity editor_identity=""
+    [ -x "$readiness_helper" ] || readiness_helper="$TOOLS_DIR/altium-ui-ready.exe"
+    [ -x "$readiness_helper" ] || { warn "WebView2 cleanup needs the UI readiness helper; leaving the browser running."; return; }
     sleep 20
-    while pgrep -f 'X2.EXE' >/dev/null 2>&1; do
-        local pid
-        for pid in $(pgrep -f 'msedgewebview2.exe --embedded-browser-webview.*--webview-exe-name=X2.EXE'); do
-            if [ "$(etime_seconds "$pid")" -ge 20 ] 2>/dev/null; then
-                kill "$pid" 2>/dev/null && echo "$(date +%H:%M:%S) webview2 watchdog: ended Altium's WebView2 browser (pid $pid)"
-            fi
-        done
+    while :; do
+        status=0
+        identity="$(WINEDEBUG=-all "$WINE" "$readiness_helper" 2>/dev/null)" || status=$?
+        identity="${identity%$'\r'}"
+        if [ "$status" -eq 3 ]; then
+            if [ -n "$editor_identity" ] || [ $((SECONDS - started)) -ge 180 ]; then return; fi
+        elif [ -n "$identity" ]; then
+            [ -n "$editor_identity" ] && [ "$identity" != "$editor_identity" ] && return
+            editor_identity="$identity"
+        fi
+        # Conservatively defer if any AD26 instance is busy. Termination itself is
+        # scoped to this prefix and this editor's browser children by the helper.
+        ui_pids="$(pgrep -if '^C:.*[\\]X2[.]EXE([[:space:]]|$)' | paste -sd, -)"
+        ui_cpu="$(ps -p "${ui_pids:-0}" -o %cpu= 2>/dev/null | awk 'BEGIN {m=-1} {if ($1>m)m=$1} END {if(m>=0)print int(m)}')"
+        if [ "$status" -eq 0 ] && [ -n "$ui_cpu" ] && [ "$ui_cpu" -lt 20 ]; then
+            ready_polls=$((ready_polls + 1))
+        else
+            ready_polls=0
+        fi
+        if [ "$ready_polls" -ge 2 ]; then
+            WINEDEBUG=-all "$WINE" "$readiness_helper" --cleanup "$editor_identity"
+        fi
         sleep 10
     done
 }

@@ -9,12 +9,12 @@
 #   --modules DIR   skip the build; take the files from DIR (e.g. a release download):
 #                   winemac.so, d2d1.dll, winhttp.dll, msado15.dll, msado15-i386.dll,
 #                   d3dx9_43-i386.dll, kernelbase-i386.dll, d3d9-i386.dll, wined3d-i386.dll, wineserver,
-#                   altium-gdi-copy-arm64 and
+#                   altium-gdi-copy-arm64, altium-ui-ready.exe and
 #                   optionally the already-patched
 #                   wow64cpu.dll and user32.dll (then no python3 / Xcode tools
 #                   are needed).
 #                   DIR/SHA256SUMS, if present, is checked.
-#   --export DIR    also copy all fifteen changed files + SHA256SUMS into DIR (for publishing)
+#   --export DIR    also copy all sixteen changed files + SHA256SUMS into DIR (for publishing)
 #   --clean         delete the source/build trees and exit
 #
 # What changes compared with the stock bundle (lib/wine/...):
@@ -79,7 +79,8 @@ dlls/d3d9/i386-windows/d3d9.dll|i386-windows/d3d9.dll|d3d9-i386.dll
 dlls/wined3d/i386-windows/wined3d.dll|i386-windows/wined3d.dll|wined3d-i386.dll
 server/wineserver|../../bin/wineserver|wineserver"
 NATIVE_MODULE="altium-gdi-copy-arm64"
-BUILT_MODULES="$NATIVE_MODULE"
+READINESS_MODULE="altium-ui-ready.exe"
+BUILT_MODULES="$NATIVE_MODULE $READINESS_MODULE"
 for t in $TARGETS; do BUILT_MODULES="$BUILT_MODULES ${t##*|}"; done
 
 SRC="$BUILD_ROOT/src-wine-$WINE_VER"
@@ -180,6 +181,8 @@ build_modules() {
     for t in $TARGETS; do cp "$OBJ/${t%%|*}" "$MODULES_DIR/${t##*|}" || die "Missing build output ${t%%|*}"; done
     /usr/bin/clang -arch arm64 -O3 "$SRC/dlls/winemac.drv/native_gdi_worker.c" -o "$MODULES_DIR/$NATIVE_MODULE" \
         || die "Native GDI worker build failed"
+    "$llvm/bin/x86_64-w64-mingw32-clang" -O2 "$KIT_DIR/tools/altium-ui-ready.c" \
+        -o "$MODULES_DIR/$READINESS_MODULE" -luser32 || die "UI readiness helper build failed"
     codesign -s - -f "$MODULES_DIR/$NATIVE_MODULE" 2>/dev/null || die "Could not sign native GDI worker"
     codesign -s - -f "$MODULES_DIR/wineserver" 2>/dev/null || die "Could not sign the rebuilt wineserver"
     # The unstripped d3dx9 is 2.6 MB (the stock one is 0.6 MB); the other modules ship as built.
@@ -231,6 +234,9 @@ done
 [ -f "$MODULES_DIR/$NATIVE_MODULE" ] || die "$MODULES_DIR/$NATIVE_MODULE missing"
 cp "$MODULES_DIR/$NATIVE_MODULE" "$BINW/$NATIVE_MODULE" || die "Copy native GDI worker failed"
 chmod 755 "$BINW/$NATIVE_MODULE" || die "Could not set native worker permissions"
+[ -f "$MODULES_DIR/$READINESS_MODULE" ] || die "$MODULES_DIR/$READINESS_MODULE missing"
+cp "$MODULES_DIR/$READINESS_MODULE" "$BINW/$READINESS_MODULE" || die "Copy UI readiness helper failed"
+chmod 755 "$BINW/$READINESS_MODULE"
 chmod 755 "$BINW/wineserver" || die "Could not set wineserver permissions"
 codesign -s - -f "$BINW/wineserver" 2>/dev/null || die "Could not sign wineserver"
 
@@ -244,7 +250,7 @@ cp "$WINE_ROOT/VERSION" "$NEW/VERSION"
     ( cd "$LIBW" && shasum -a 256 x86_64-unix/winemac.so x86_64-windows/d2d1.dll x86_64-windows/winhttp.dll \
         x86_64-windows/gdiplus.dll i386-windows/gdiplus.dll x86_64-windows/msado15.dll i386-windows/msado15.dll i386-windows/d3dx9_43.dll i386-windows/kernelbase.dll i386-windows/d3d9.dll i386-windows/wined3d.dll \
         x86_64-windows/wow64cpu.dll x86_64-windows/user32.dll ) | sed 's/^/  /'
-    ( cd "$BINW" && shasum -a 256 wineserver "$NATIVE_MODULE" ) | sed 's/^/  /'
+    ( cd "$BINW" && shasum -a 256 wineserver "$NATIVE_MODULE" "$READINESS_MODULE" ) | sed 's/^/  /'
 } > "$NEW/PATCHES"
 
 # Replacing the bundle under a running Wine would mix old and new modules in one session.
@@ -271,6 +277,7 @@ if [ -n "$EXPORT_DIR" ]; then
     cp "$L/x86_64-windows/wow64cpu.dll" "$L/x86_64-windows/user32.dll" "$EXPORT_DIR/" \
         || die "Export failed"
     cp "$PATCHED_ROOT/$(basename "$STOCK_APP")/Contents/Resources/wine/bin/$NATIVE_MODULE" "$EXPORT_DIR/" || die "Native worker export failed"
+    cp "$PATCHED_ROOT/$(basename "$STOCK_APP")/Contents/Resources/wine/bin/$READINESS_MODULE" "$EXPORT_DIR/" || die "UI readiness helper export failed"
     cp "$PATCHED_ROOT/PATCHES" "$EXPORT_DIR/PATCHES"
     # shellcheck disable=SC2086
     ( cd "$EXPORT_DIR" && shasum -a 256 $BUILT_MODULES wow64cpu.dll user32.dll > SHA256SUMS )
