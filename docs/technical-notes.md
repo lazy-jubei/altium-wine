@@ -114,7 +114,7 @@ python3 tools/app-control.py "$HOME/AltiumWine/wine-patched/Wine Staging.app" \
     "$HOME/Applications/Altium Designer Runtime.app"
 ```
 
-Start Altium normally afterward. The GUI has bundle ID `local.altium-wine.runtime.ad26`. The runtime includes the MoltenVK driver manifest needed for PCB graphics; an omitted manifest caused a reproducible DXVK startup exception during testing. Only the `X2.EXE` process is redirected, so browser helpers retain their original identity. Wine still lacks a bridge from Windows child controls to macOS accessibility; window-bound mouse and keyboard control work, but many control names remain unavailable.
+Start Altium normally afterward. The GUI has bundle ID `local.altium-wine.runtime.ad26`. The runtime includes the MoltenVK driver manifest needed for PCB graphics; an omitted manifest caused a reproducible DXVK startup exception during testing. Only the `X2.EXE` process is redirected, so browser helpers retain their original identity. Patch `0033` also exposes the containing window for accessibility hits on Wine client areas. Without it, app-control can capture Altium’s main window but reject coordinate clicks. Tested with AD26 menus and a separate Wine fixture. Windows child controls still lack a macOS accessibility bridge, so many control names remain unavailable.
 
 Restore the original loader with `python3 tools/app-control.py "$HOME/AltiumWine/wine-patched/Wine Staging.app" --restore`. Close Altium before changing loaders. Rebuilding Wine replaces this optional integration; rerun the utility with a new runtime app path afterward.
 

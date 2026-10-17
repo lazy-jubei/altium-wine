@@ -1,0 +1,23 @@
+From: lazy-jubei
+Subject: [PATCH] winemac: expose the containing window for accessibility hits
+
+Blank client areas resolve to WineWindow itself. Cocoa normally omits AXWindow
+from a window, so automation clients cannot resolve the containing window for
+that hit. Return the window itself through the standard accessibility getter.
+
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -1061,6 +1061,13 @@
+     @synthesize usePerPixelAlpha;
+     @synthesize himc, commandDone;
+     @synthesize contentViewMaskLayer;
++
++    /* A hit on blank Wine content resolves directly to this window.  Keep the
++       containing-window attribute available to accessibility controllers. */
++    - (id) accessibilityWindow
++    {
++        return self;
++    }
+ 
+     + (WineWindow*) createWindowWithFeatures:(const struct macdrv_window_features*)wf
+                                  windowFrame:(NSRect)window_frame
