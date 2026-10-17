@@ -1,0 +1,30 @@
+From: lazy-jubei
+Subject: [PATCH] winemac: transfer floating-panel activation in modern Altium too
+
+AD26 has the same floating-panel lifetime as AD17: Close detaches the embedded
+view before a later activation change tries to deactivate it. This raises
+"Control 'View...' has no parent window". Include X2.EXE in the existing guarded
+activation transfer and queued-click handling. Keep the panel/button, owner,
+thread and DPI checks unchanged. Apply after 0020.
+
+--- a/dlls/winemac.drv/mouse.c
++++ b/dlls/winemac.drv/mouse.c
+@@ -877,7 +877,7 @@
+     macdrv_raise_modal_popup(popup);
+ }
+ 
+-/* Complete the activation transfer before AD17's client-side Close button
++/* Complete the activation transfer before Altium's client-side Close button
+  * detaches its view. Its floating panel otherwise remains active until the next
+  * native click, and Delphi then tries to deactivate an orphaned control. */
+ static void deactivate_altium_panel_before_close(HWND hwnd, const macdrv_event *event)
+@@ -893,7 +893,8 @@
+     BOOL closing = FALSE;
+ 
+     if (event->mouse_button.pressed || event->mouse_button.button != 0
+-            || wcsicmp(base ? base + 1 : image, u"DXP.EXE")) return;
++            || (wcsicmp(base ? base + 1 : image, u"DXP.EXE") &&
++                wcsicmp(base ? base + 1 : image, u"X2.EXE"))) return;
+     NtUserGetClassName(hwnd, FALSE, &class_name);
+     if (wcscmp(class_buffer, u"TClientBarControl")) return;
+     owner = NtUserGetWindowRelative(hwnd, GW_OWNER);

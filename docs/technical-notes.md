@@ -247,6 +247,14 @@ messages before transferring activation, so a delayed click cannot reactivate
 the detached view. Rapid, held and inactive-panel Close tests pass; other input
 paths retain their normal handling.
 
+Patch `0034` applies the same guarded activation transfer to modern Altium
+(`X2.EXE`). AD26 also detaches a floating panel's embedded view during Close;
+without the transfer, the subsequent deactivation can raise the same parent-window
+error. The panel class, caption button, enabled owner, thread and DPI checks remain
+unchanged.
+AD26 regression checks covered two rapid and one held Messages-panel close,
+returning to the PCB without the previously reproduced parent-window exception.
+
 ## Building the patched Wine
 
 ```bash
