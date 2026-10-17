@@ -105,6 +105,19 @@ Verification:
 
 WebView2's `VideoCaptureThread` spins forever under Wine and floods `wineserver`, which cut PCB panning from about 130 fps to about 50. `run` ends Altium's WebView2 browser 20 s after it starts. Blocking it from starting instead makes Altium show "File not found (0x80070002)". `KILL_WEBVIEW2=0` turns the watchdog off.
 
+### Native app control
+
+Wine normally launches Altium's GUI from an unbundled loader. macOS app-control tools can then fail to attach because that process has no bundle identifier. Close Altium and run the optional Python 3 utility:
+
+```bash
+python3 tools/app-control.py "$HOME/AltiumWine/wine-patched/Wine Staging.app" \
+    "$HOME/Applications/Altium Designer Runtime.app"
+```
+
+Start Altium normally afterward. The GUI has bundle ID `local.altium-wine.runtime.ad26`. The runtime includes the MoltenVK driver manifest needed for PCB graphics; an omitted manifest caused a reproducible DXVK startup exception during testing. Only the `X2.EXE` process is redirected, so browser helpers retain their original identity. Wine still lacks a bridge from Windows child controls to macOS accessibility; window-bound mouse and keyboard control work, but many control names remain unavailable.
+
+Restore the original loader with `python3 tools/app-control.py "$HOME/AltiumWine/wine-patched/Wine Staging.app" --restore`. Close Altium before changing loaders. Rebuilding Wine replaces this optional integration; rerun the utility with a new runtime app path afterward.
+
 ### AD17 Vault text scaling
 
 AD17.1's shared Vault controls have inconsistent scaling baselines. The local patch enables header scaling, supplies a 96-DPI baseline for dynamic message and summary controls, and scales the summary row constraints. The search view uses one DPI baseline and lets its parent own split-container layout; inherited scaling otherwise enlarges padding until it consumes the result grid. New searches default to paged results rather than the original default of loading every page, which imports thousands of parts before displaying the grid. Explicit saved choices and the existing “Load all pages” menu option remain available; turn that option off in an existing profile if it was previously enabled.
