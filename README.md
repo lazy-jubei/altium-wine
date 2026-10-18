@@ -10,10 +10,10 @@ Altium 365 works, including project cloning.
 
 ## Install
 
-Get the Altium offline installer from your Altium account, then download and run the [kit installer](https://github.com/lazy-jubei/altium-wine/releases/tag/v1.1.2):
+Get the Altium offline installer from your Altium account, then download and run the [kit installer](https://github.com/lazy-jubei/altium-wine/releases/tag/v1.1.3):
 
 ```bash
-curl -fL https://github.com/lazy-jubei/altium-wine/releases/download/v1.1.2/install.sh -o install.sh
+curl -fL https://github.com/lazy-jubei/altium-wine/releases/download/v1.1.3/install.sh -o install.sh
 bash install.sh
 ```
 
@@ -31,6 +31,7 @@ Optimizations include:
 - Matched color spaces, parallel copies and native AD17 pan compositing.
 - Queued Direct3D uploads for faster AD17 PCB views.
 - Fixes for hidden dialogs, floating panels, tooltip input and Vault freezes.
+- macOS app-control support and WebView2 cleanup that waits for an idle editor.
 
 For faster AD17 3D panning, disable **Use Ordered Blending in 3D** in **Preferences → PCB Editor → Display**. [Tuning details](docs/technical-notes.md).
 

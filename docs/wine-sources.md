@@ -75,7 +75,7 @@ cached mappings are limited to four and can acquire write access when source
 and destination roles reverse. The driver stops its own worker when unloaded.
 
 The worker is built with the macOS SDK as `bin/altium-gdi-copy-arm64`. The
-export contains fifteen files, all listed in `SHA256SUMS`. The original
+export contains sixteen files, all listed in `SHA256SUMS`. The original
 Win32u, FreeType and Vulkan modules remain installed. Native copies defer
 while the compositor preview is active. `AD17_NATIVE_GDI=0` and
 `AD17_SMOOTH_SCHEMATIC_PAN=0` disable the respective paths before launching.
