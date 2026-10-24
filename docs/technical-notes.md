@@ -147,6 +147,45 @@ Altium 26.10.1, measured with MoltenVK frame statistics on an M4:
 
 ### Altium 17
 
+Optional local module patches accelerate AD17.1's bounds, grid, distance,
+memory-copy and geometry-hash helpers. They use SSE2/integer operations with
+original-code fallbacks for unsupported inputs and precision modes. The patcher
+accepts only two verified original module hashes and writes separate files:
+
+```bash
+python3 tools/ad17-viewport.py /path/to/original/Core3D.dll /tmp/Core3D.dll --geometry-hash --frames-ahead 2
+python3 tools/ad17-viewport.py /path/to/original/ADVPCB.DLL /tmp/ADVPCB.DLL
+```
+
+Close AD17, keep the originals, then install the outputs in `AD17/System`.
+Restore the originals to undo. These patches are separate from the installer;
+only replacement helper code is distributed here.
+
+`--frames-ahead 2` expands the GPU event-query ring from one entry to two,
+allowing CPU/GPU overlap. Query completion checks, error handling and the
+original retry limit remain; initialization falls back to one entry if the
+second query fails. It can add one frame of input latency. Omit this option to
+retain the original pacing.
+
+Tests in `diagnostics/ad17-viewport-*` cover 2.8 million bounds cases, 1.44 million
+grid transforms, 2.88 million distance cases, 72,775 copies per module, 61,676
+hash cases and 18,000 query ownership/failure/ABI cases. Exceptional values,
+rounding, aliases and guarded memory are included; stationary viewport pixels
+also match. Two-frame buffer reuse passes 8,192 GPU tile checks. Embedded
+payloads match the assembly sources beside the tests.
+
+A dense PCB pan at full Retina resolution, with grid, antialiasing and blending
+retained, measured **31.7–32.2 fps** with two queries versus **26.6 fps** with one.
+These count changed viewport images during the interior 18 seconds of a basic
+20-second pan; they are measurements of one board and camera on the M4.
+
+`diagnostics/rosetta-x87-signal.c` isolates an x87 compare/pop corruption seen
+under asynchronous signals on the tested macOS 15.7.9 Rosetta runtime, without
+Wine or Altium. The uninterrupted control and split compare/pop pass. Avoid
+suspending profilers when measuring this renderer; they reproduced corrupt FPU
+state and subsequent geometry exceptions. No global Rosetta workaround is
+installed by these patches.
+
 AD17 uses Direct3D 9 for PCB rendering. It performs roughly 1,600 small dynamic
 vertex-buffer locks per frame on a 2 MiB ring. The synchronous map/unmap round
 trips cost about 230 ms per frame under WoW64/Rosetta. Patch `0015` queues copies

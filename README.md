@@ -29,7 +29,7 @@ Optimizations include:
 
 - Cached Direct2D state, glyphs and geometry for faster schematics.
 - Matched color spaces, parallel copies and native AD17 pan compositing.
-- Queued Direct3D uploads for faster AD17 PCB views.
+- Queued Direct3D uploads and [optional AD17 PCB helpers](docs/technical-notes.md#altium-17).
 - Fixes for hidden dialogs, floating panels, tooltip input and Vault freezes.
 - macOS app-control support and WebView2 cleanup that waits for an idle editor.
 
