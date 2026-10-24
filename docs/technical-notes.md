@@ -205,7 +205,9 @@ the per-point grid helper and 31.3–31.4 fps with batching. A fresh module laun
 measured 30.5–30.9 fps there; the stationary repaint remained pixel-identical.
 
 An optional D3D9 Metal renderer and GPU grid cache reached **42–44 fps** in the
-4354×2425 dense view on the M4. The grid stays visible and is drawn from actual
+4354×2425 dense view on the M4. Direct swapchain timing without screen capture
+measured 46.3–46.5 fps; with capture it measured 44.1 fps (43.8 visible).
+The grid stays visible and is drawn from actual
 vertices; this does not interpolate viewport images. A held pan matched the
 original redraw across all 10,548,750 viewport pixels. Large coordinates,
 unsupported layouts and precision modes retain the original grid path.
