@@ -36,9 +36,16 @@ if [ ! -d "$BUILD_ROOT/spirv-tools/external/spirv-headers/include" ]; then
     tar -xzf "$BUILD_ROOT/downloads/spirv-headers.tar.gz" --strip-components 1 \
         -C "$BUILD_ROOT/spirv-tools/external/spirv-headers"
 fi
-if [ ! -f "$BUILD_ROOT/dxvk/.altium-metal-patched" ]; then
+patch_hash="$(shasum -a 256 "$KIT_DIR/patches/dxvk-ad17-metal.patch" | cut -d ' ' -f 1)"
+patch_stamp="$BUILD_ROOT/dxvk/.altium-metal-patched"
+if [ -f "$patch_stamp" ]; then
+    [ "$(cat "$patch_stamp")" = "$patch_hash" ] || {
+        echo "DXVK patch changed since this build tree was prepared. Use a fresh AD17_DXVK_BUILD_ROOT." >&2
+        exit 1
+    }
+else
     (cd "$BUILD_ROOT/dxvk" && patch -p1 < "$KIT_DIR/patches/dxvk-ad17-metal.patch")
-    touch "$BUILD_ROOT/dxvk/.altium-metal-patched"
+    printf '%s\n' "$patch_hash" > "$patch_stamp"
 fi
 cat > "$BUILD_ROOT/win32.cmake" <<EOF
 set(CMAKE_SYSTEM_NAME Windows)

@@ -91,12 +91,24 @@ int wmain(int argc, wchar_t **argv) {
                             &response) &&
         load(pid, path)) {
       UINT status = RegisterWindowMessageW(L"Codex.AD17.GridCache.20261024");
-      for (unsigned attempt = 0; attempt < 20; attempt++) {
+      for (unsigned attempt = 0; attempt < 240; attempt++) {
         response = 0;
         if (SendMessageTimeoutW(w, status, 102, 0x5ad1734,
-                                SMTO_ABORTIFHUNG, 100, &response) && response == 1) {
-          printf("AD17 grid helper active in process %lu\n", pid);
-          return 0;
+                                SMTO_ABORTIFHUNG, 100, &response)) {
+          if (response == 1) {
+            /* A delayed install may have outlived the worker's timeout.
+               Confirm the mode as well as the hooks before reporting success. */
+            if (SendMessageTimeoutW(w, status, 4, 0x5ad1734,
+                                    SMTO_ABORTIFHUNG, 100, &response) && response == 1) {
+              printf("AD17 grid helper active in process %lu\n", pid);
+              return 0;
+            }
+          } else if (response == 0) {
+            /* Initial scene creation can temporarily stop the GUI pumping.
+               The helper validates its bytes again before installing. */
+            SendMessageTimeoutW(w, status, 900, 0x5ad1734,
+                                SMTO_ABORTIFHUNG, 100, &response);
+          }
         }
         Sleep(500);
       }

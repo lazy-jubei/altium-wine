@@ -208,3 +208,223 @@ Applies to Gcenx/DXVK-macOS 8f1e28deed3ad30802f7e1bdff428ec14e6e7817.
  
    /**
     * \brief Logger
+--- a/src/d3d9/d3d9_swapchain.cpp
++++ b/src/d3d9/d3d9_swapchain.cpp
+@@ -342,7 +342,8 @@
+       return D3DERR_INVALIDCALL;
+ 
+     Rc<DxvkBuffer> dstBuffer = dstTexInfo->GetBuffer(dst->GetSubresource());
+-    Rc<DxvkImage>  srcImage  = srcTexInfo->GetImage();
++    Rc<DxvkImage>  srcImage  = m_frontView != nullptr && !m_frontNew
++      ? m_frontView->image() : srcTexInfo->GetImage();
+ 
+     if (srcImage->info().sampleCount != VK_SAMPLE_COUNT_1_BIT) {
+       DxvkImageCreateInfo resolveInfo;
+@@ -852,9 +853,18 @@
+         {  int32_t(m_dstRect.left),                    int32_t(m_dstRect.top)                    },
+         { uint32_t(m_dstRect.right - m_dstRect.left), uint32_t(m_dstRect.bottom - m_dstRect.top) } };
+ 
++      // D3D9 subrectangle presents retain the front buffer outside dstRect.
++      // WSI images rotate and have undefined contents, so compose into an owned
++      // full-window image before presenting. Apply gamma only in the final blit.
++      if (m_frontNew) {
++        m_context->clearRenderTarget(m_frontView, VK_IMAGE_ASPECT_COLOR_BIT, VkClearValue());
++        m_frontNew = false;
++      }
++      m_compositor->presentImage(m_context.ptr(),
++        m_frontView, dstRect, swapImageView, srcRect, true);
++      VkRect2D fullRect = { { 0, 0 }, info.imageExtent };
+       m_blitter->presentImage(m_context.ptr(),
+-        m_imageViews.at(imageIndex), dstRect,
+-        swapImageView, srcRect);
++        m_imageViews.at(imageIndex), fullRect, m_frontView, fullRect);
+ 
+       if (m_hud != nullptr)
+         m_hud->render(m_context, info.format, info.imageExtent);
+@@ -1002,6 +1012,21 @@
+ 
+       m_imageViews[i] = new DxvkImageView(
+         m_device->vkd(), image, viewInfo);
++    }
++    if (m_frontView == nullptr || m_frontView->imageInfo().extent != imageInfo.extent
++     || m_frontView->info().format != viewInfo.format) {
++      imageInfo.usage |= VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
++                      | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
++      imageInfo.stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
++                      | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
++      imageInfo.access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
++                      | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
++      imageInfo.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
++      imageInfo.shared = VK_FALSE;
++      viewInfo.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
++      auto image = m_device->createImage(imageInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
++      m_frontView = m_device->createImageView(image, viewInfo);
++      m_frontNew = true;
+     }
+   }
+ 
+@@ -1070,6 +1095,7 @@
+ 
+   void D3D9SwapChainEx::CreateBlitter() {
+     m_blitter = new DxvkSwapchainBlitter(m_device);
++    m_compositor = new DxvkSwapchainBlitter(m_device);
+   }
+ 
+ 
+@@ -1329,37 +1355,20 @@
+     else
+       m_srcRect = *pSourceRect;
+ 
+-    RECT dstRect;
+-    if (pDestRect == nullptr) {
+-      // TODO: Should we hook WM_SIZE message for this?
+-      UINT width, height;
+-      GetWindowClientSize(m_window, &width, &height);
+-
+-      dstRect.top    = 0;
+-      dstRect.left   = 0;
+-      dstRect.right  = LONG(width);
+-      dstRect.bottom = LONG(height);
+-    }
+-    else
+-      dstRect = *pDestRect;
+-
+-    bool recreate = 
+-       m_dstRect.left   != dstRect.left
+-    || m_dstRect.top    != dstRect.top
+-    || m_dstRect.right  != dstRect.right
+-    || m_dstRect.bottom != dstRect.bottom;
+-
+-    m_dstRect = dstRect;
+-
++    // A destination rectangle selects a region within the window; it does not
++    // resize the window's swapchain to that region's width and height.
++    UINT width, height;
++    GetWindowClientSize(m_window, &width, &height);
++    VkExtent2D extent = { std::max(width, 1u), std::max(height, 1u) };
++    bool recreate = extent != m_presentExtent;
++    m_presentExtent = extent;
++    m_dstRect = pDestRect ? *pDestRect : RECT { 0, 0, LONG(width), LONG(height) };
+     return recreate;
+   }
+ 
+   VkExtent2D D3D9SwapChainEx::GetPresentExtent() {
+-    return VkExtent2D {
+-      std::max<uint32_t>(m_dstRect.right  - m_dstRect.left, 1u),
+-      std::max<uint32_t>(m_dstRect.bottom - m_dstRect.top,  1u) };
+-  }
+-
++    return m_presentExtent;
++  }
+ 
+   VkFullScreenExclusiveEXT D3D9SwapChainEx::PickFullscreenMode() {
+     return m_dialog
+--- a/src/d3d9/d3d9_swapchain.h
++++ b/src/d3d9/d3d9_swapchain.h
+@@ -98,6 +98,10 @@
+     Rc<DxvkDevice>            m_device;
+     Rc<DxvkContext>           m_context;
+     Rc<DxvkSwapchainBlitter>  m_blitter;
++    Rc<DxvkSwapchainBlitter>  m_compositor;
++    Rc<DxvkImageView>         m_frontView;
++    bool                      m_frontNew = true;
++    VkExtent2D                m_presentExtent = { 0, 0 };
+ 
+     Rc<vk::Presenter>         m_presenter;
+ 
+--- a/src/dxvk/dxvk_swapchain_blitter.cpp
++++ b/src/dxvk/dxvk_swapchain_blitter.cpp
+@@ -25,7 +25,8 @@
+     const Rc<DxvkImageView>&  dstView,
+           VkRect2D            dstRect,
+     const Rc<DxvkImageView>&  srcView,
+-          VkRect2D            srcRect) {
++          VkRect2D            srcRect,
++          bool                preserveContents) {
+     if (m_gammaDirty)
+       this->updateGammaTexture(ctx);
+ 
+@@ -49,10 +50,10 @@
+ 
+     if (srcView->imageInfo().sampleCount == VK_SAMPLE_COUNT_1_BIT) {
+       this->draw(ctx, sameSize ? m_fsCopy : m_fsBlit,
+-        dstView, dstRect, srcView, srcRect);
++        dstView, dstRect, srcView, srcRect, preserveContents);
+     } else if (sameSize) {
+       this->draw(ctx, m_fsResolve,
+-        dstView, dstRect, srcView, srcRect);
++        dstView, dstRect, srcView, srcRect, preserveContents);
+     } else {
+         if (m_resolveImage == nullptr
+          || m_resolveImage->info().extent != srcView->imageInfo().extent
+@@ -60,7 +61,7 @@
+           this->createResolveImage(srcView->imageInfo());
+ 
+       this->resolve(ctx, m_resolveView, srcView);
+-      this->draw(ctx, m_fsBlit, dstView, dstRect, m_resolveView, srcRect);
++      this->draw(ctx, m_fsBlit, dstView, dstRect, m_resolveView, srcRect, preserveContents);
+ 
+       usedResolveImage = true;
+     }
+@@ -108,7 +109,8 @@
+     const Rc<DxvkImageView>&  dstView,
+           VkRect2D            dstRect,
+     const Rc<DxvkImageView>&  srcView,
+-          VkRect2D            srcRect) {
++          VkRect2D            srcRect,
++          bool                preserveContents) {
+     DxvkInputAssemblyState iaState;
+     iaState.primitiveTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+     iaState.primitiveRestart  = VK_FALSE;
+@@ -174,7 +176,16 @@
+     viewport.minDepth = 0.0f;
+     viewport.maxDepth = 1.0f;
+     
+-    ctx->setViewports(1, &viewport, &dstRect);
++    VkRect2D scissor = dstRect;
++    const auto& extent = dstView->imageInfo().extent;
++    auto clip = [] (int32_t& offset, uint32_t& size, uint32_t limit) {
++      int64_t end = int64_t(offset) + size;
++      offset = std::clamp(offset, 0, int32_t(limit));
++      size = uint32_t(std::max<int64_t>(0, std::min<int64_t>(end, limit) - offset));
++    };
++    clip(scissor.offset.x, scissor.extent.width, extent.width);
++    clip(scissor.offset.y, scissor.extent.height, extent.height);
++    ctx->setViewports(1, &viewport, &scissor);
+ 
+     DxvkRenderTargets renderTargets;
+     renderTargets.color[0].view   = dstView;
+@@ -186,9 +197,9 @@
+       dstView->imageInfo().extent.width,
+       dstView->imageInfo().extent.height };
+ 
+-    if (dstRect.extent == dstExtent)
++    if (!dstRect.offset.x && !dstRect.offset.y && dstRect.extent == dstExtent)
+       ctx->discardImageView(dstView, VK_IMAGE_ASPECT_COLOR_BIT);
+-    else
++    else if (!preserveContents)
+       ctx->clearRenderTarget(dstView, VK_IMAGE_ASPECT_COLOR_BIT, VkClearValue());
+ 
+     ctx->bindResourceSampler(BindingIds::Image, m_samplerPresent);
+--- a/src/dxvk/dxvk_swapchain_blitter.h
++++ b/src/dxvk/dxvk_swapchain_blitter.h
+@@ -39,7 +39,8 @@
+       const Rc<DxvkImageView>&  dstView,
+             VkRect2D            dstRect,
+       const Rc<DxvkImageView>&  srcView,
+-            VkRect2D            srcRect);
++            VkRect2D            srcRect,
++            bool                preserveContents = false);
+ 
+     /**
+      * \brief Sets gamma ramp
+@@ -95,7 +96,8 @@
+       const Rc<DxvkImageView>&  dstView,
+             VkRect2D            dstRect,
+       const Rc<DxvkImageView>&  srcView,
+-            VkRect2D            srcRect);
++            VkRect2D            srcRect,
++            bool                preserveContents = false);
+ 
+     void resolve(
+             DxvkContext*        ctx,

@@ -220,6 +220,12 @@ to remove inactive color/depth sampler aliases before Metal compilation. Depth
 comparison remains supported. MoltenVK 1.4.2 was tested; the older bundled driver
 rejects the host-memory import used by this 32-bit renderer.
 
+Partial D3D9 presents retain a full-window front image and update only the
+requested region. This fixes the 3D viewport turning black after a pan: small
+cursor redraws previously resized the swapchain to the redraw rectangle.
+`diagnostics/d3d9-partial-present.c` checks retention, scaling, edge clipping,
+readback and resize, with both COPY and Altium's multisampled DISCARD path.
+
 With AD17 closed, back up any `d3d9.dll` beside `DXP.EXE` and install the built
 DLL there. Set `AD17_DXVK=1` and `AD17_DXVK_ICD=/path/to/MoltenVK_icd.json` in
 `config.local.sh`. Both options are AD17-only; the renderer is opt-in.
@@ -232,6 +238,8 @@ vertices on the GPU while the right-button pan is active, then drops the CPU
 cache. Its shader, device, vertex-signature and coordinate guards restrict replay
 to the matching grid. Restart with `AD17_GRID_CACHE=0` to disable it. These
 helpers modify process memory only; they do not edit board files.
+The loader retries guarded activation after a slow initial scene load and
+confirms the replay mode before reporting success.
 
 Wine patch `0036` separately resolves multisampled backbuffers before Vulkan
 presentation. It fixes a black viewport caused by blitting a multisampled image;

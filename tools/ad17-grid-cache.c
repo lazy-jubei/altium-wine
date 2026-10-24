@@ -720,17 +720,23 @@ static DWORD WINAPI worker(void *unused) {
   DWORD image_size =
       ((IMAGE_NT_HEADERS *)(d3d + ((IMAGE_DOS_HEADER *)d3d)->e_lfanew))
           ->OptionalHeader.SizeOfImage;
-  if (image_size > 0x440588 &&
-      *(void **)(d3d + 0x44057c) == (void *)(d3d + 0x128c0) &&
-      *(void **)(d3d + 0x440584) == (void *)(d3d + 0x13bd0)) {
-    draw_slot = (void **)(d3d + 0x44057c);
-    up_slot = (void **)(d3d + 0x440584);
-  } else if (image_size > 0x1c574 &&
-             *(void **)(d3d + 0x1c424 + 81 * 4) == (void *)(d3d + 0x9cc0) &&
-             *(void **)(d3d + 0x1c424 + 83 * 4) == (void *)(d3d + 0xa460)) {
-    draw_slot = (void **)(d3d + 0x1c424 + 81 * 4);
-    up_slot = (void **)(d3d + 0x1c424 + 83 * 4);
-  } else
+  /* Known DXVK builds (before/after partial-present repair) and Wine D3D9.
+     Keep both function-pointer checks before changing any vtable slot. */
+  static const DWORD layouts[][3] = {
+      {0x440438, 0x128c0, 0x13bd0},
+      {0x441438, 0x128c0, 0x13bd0},
+      {0x1c424, 0x9cc0, 0xa460}};
+  for (unsigned i = 0; i < sizeof(layouts) / sizeof(layouts[0]); i++) {
+    DWORD table = layouts[i][0];
+    if (image_size < table + 84 * 4 ||
+        *(void **)(d3d + table + 81 * 4) != (void *)(d3d + layouts[i][1]) ||
+        *(void **)(d3d + table + 83 * 4) != (void *)(d3d + layouts[i][2]))
+      continue;
+    draw_slot = (void **)(d3d + table + 81 * 4);
+    up_slot = (void **)(d3d + table + 83 * 4);
+    break;
+  }
+  if (!draw_slot)
     return 4;
   old_draw = *draw_slot;
   old_up = *up_slot;
