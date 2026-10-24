@@ -1,13 +1,14 @@
 /* Copyright 2026 lazy-jubei. SPDX-License-Identifier: MIT
  * i686-w64-mingw32-clang -O2 d3d9-frame-queue.c -ld3d9 -lgdi32 -o check.exe
  * Run with ALTIUM_D3D9_UPLOADS=1 ALTIUM_D3D9_UPLOAD_HINTS=1.
- * Two outstanding frames share a dynamic VB, with frequent ring discards.
+ * Two or three outstanding frames share a dynamic VB, with frequent ring discards.
  * Read back every frame before its render target is reused.
  */
 #define COBJMACROS
 #include <windows.h>
 #include <d3d9.h>
 #include <stdio.h>
+#include <stdlib.h>
 #define CHECK(x) do { HRESULT hr = (x); if (FAILED(hr)) { printf("FAIL line %d hr=%08lx\n", __LINE__, hr); return 1; } } while (0)
 struct vertex { float x, y, z, rhw; DWORD colour; };
 static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) { return DefWindowProcA(h, m, w, l); }
@@ -38,8 +39,10 @@ static int wait_query(IDirect3DQuery9 *query)
     }
     return FAILED(hr);
 }
-int main(void)
+int main(int argc, char **argv)
 {
+    unsigned depth = argc > 1 ? atoi(argv[1]) : 2;
+    if (depth < 2 || depth > 3) return 1;
     WNDCLASSA wc = {0};
     wc.lpfnWndProc = proc; wc.hInstance = GetModuleHandleA(NULL); wc.lpszClassName = "FrameQueue";
     if (!RegisterClassA(&wc)) return 1;
@@ -55,9 +58,9 @@ int main(void)
     IDirect3DVertexBuffer9 *vb = NULL;
     CHECK(IDirect3DDevice9_CreateVertexBuffer(dev, 2 * 1024 * 1024, D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
           D3DFVF_XYZRHW | D3DFVF_DIFFUSE, D3DPOOL_DEFAULT, &vb, NULL));
-    IDirect3DSurface9 *rt[2], *copy;
-    IDirect3DQuery9 *queries[2];
-    for (unsigned n = 0; n < 2; n++) {
+    IDirect3DSurface9 *rt[3], *copy;
+    IDirect3DQuery9 *queries[3];
+    for (unsigned n = 0; n < depth; n++) {
         CHECK(IDirect3DDevice9_CreateRenderTarget(dev, 128, 128, D3DFMT_X8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE, &rt[n], NULL));
         CHECK(IDirect3DDevice9_CreateQuery(dev, D3DQUERYTYPE_EVENT, &queries[n]));
     }
@@ -67,8 +70,8 @@ int main(void)
     CHECK(IDirect3DDevice9_SetRenderState(dev, D3DRS_CULLMODE, D3DCULL_NONE));
     CHECK(IDirect3DDevice9_SetRenderState(dev, D3DRS_ZENABLE, FALSE));
     for (unsigned frame = 0; frame < 128; frame++) {
-        unsigned slot = frame % 2;
-        if (frame >= 2 && (wait_query(queries[slot]) || verify(dev, rt[slot], copy, frame - 2))) return 2;
+        unsigned slot = frame % depth;
+        if (frame >= depth && (wait_query(queries[slot]) || verify(dev, rt[slot], copy, frame - depth))) return 2;
         CHECK(IDirect3DDevice9_SetRenderTarget(dev, 0, rt[slot]));
         CHECK(IDirect3DDevice9_Clear(dev, 0, NULL, D3DCLEAR_TARGET, 0, 1, 0));
         CHECK(IDirect3DDevice9_BeginScene(dev));
@@ -85,12 +88,12 @@ int main(void)
         CHECK(IDirect3DDevice9_EndScene(dev));
         CHECK(IDirect3DQuery9_Issue(queries[slot], D3DISSUE_END));
     }
-    for (unsigned slot = 0; slot < 2; slot++) {
-        if (wait_query(queries[slot]) || verify(dev, rt[slot], copy, 126 + slot)) return 2;
+    for (unsigned slot = 0; slot < depth; slot++) {
+        if (wait_query(queries[slot]) || verify(dev, rt[slot], copy, 127 - (127 - slot) % depth)) return 2;
         IDirect3DQuery9_Release(queries[slot]); IDirect3DSurface9_Release(rt[slot]);
     }
     IDirect3DSurface9_Release(copy); IDirect3DVertexBuffer9_Release(vb);
     IDirect3DDevice9_Release(dev); IDirect3D9_Release(d3d); DestroyWindow(h);
-    puts("PASS 128 frames, 8192 GPU tile checks, two-query ring and shared VB discards");
+    printf("PASS 128 frames, 8192 GPU tile checks, %u-query ring and shared VB discards\n", depth);
     return 0;
 }

@@ -1,0 +1,210 @@
+From: lazy-jubei <323475146+lazy-jubei@users.noreply.github.com>
+Subject: [PATCH] D3D9 on Metal: supported features, sampler specialization and Wine logger ABI
+
+Applies to Gcenx/DXVK-macOS 8f1e28deed3ad30802f7e1bdff428ec14e6e7817.
+
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -3,3 +3,6 @@
+ option('enable_d3d10', type : 'boolean', value : true, description: 'Build D3D10')
+ option('enable_d3d11', type : 'boolean', value : true, description: 'Build D3D11')
+ option('build_id',     type : 'boolean', value : false)
++
++option('spirv_tools_source', type : 'string', value : '', description : 'SPIRV-Tools source tree')
++option('spirv_tools_build', type : 'string', value : '', description : 'Static Win32 SPIRV-Tools build tree')
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -3915,7 +3915,7 @@
+     DxvkDeviceFeatures enabled = {};
+ 
+     // Geometry shaders are used for some meta ops
+-    enabled.core.features.geometryShader = VK_TRUE;
++    enabled.core.features.geometryShader = supported.core.features.geometryShader;
+     enabled.core.features.robustBufferAccess = VK_TRUE;
+     enabled.extRobustness2.robustBufferAccess2 = supported.extRobustness2.robustBufferAccess2;
+ 
+@@ -3944,7 +3944,7 @@
+     enabled.core.features.sampleRateShading = VK_TRUE;
+     enabled.core.features.samplerAnisotropy = supported.core.features.samplerAnisotropy;
+     enabled.core.features.shaderClipDistance = VK_TRUE;
+-    enabled.core.features.shaderCullDistance = VK_TRUE;
++    enabled.core.features.shaderCullDistance = supported.core.features.shaderCullDistance;
+ 
+     // Ensure we support real BC formats and unofficial vendor ones.
+     enabled.core.features.textureCompressionBC = VK_TRUE;
+--- a/src/d3d9/d3d9_include.h
++++ b/src/d3d9/d3d9_include.h
+@@ -79,10 +79,7 @@
+ 
+ // MinGW headers are broken. Who'dve guessed?
+ #ifndef _MSC_VER
+-typedef struct _D3DDEVINFO_RESOURCEMANAGER
+-{
+-  char dummy;
+-} D3DDEVINFO_RESOURCEMANAGER, * LPD3DDEVINFO_RESOURCEMANAGER;
++
+ 
+ #ifndef __WINE__
+ extern "C" WINUSERAPI WINBOOL WINAPI SetProcessDPIAware(VOID);
+--- a/src/dxso/dxso_compiler.cpp
++++ b/src/dxso/dxso_compiler.cpp
+@@ -3063,7 +3063,8 @@
+         uint32_t typeId = m_module.defIntType(32, 0);
+         uint32_t offset  = m_module.consti32(m_programInfo.type() == DxsoProgramTypes::VertexShader ? samplerIdx + 17 : samplerIdx);
+         uint32_t bitCnt  = m_module.consti32(1);
+-        uint32_t isDepth = m_module.opBitFieldUExtract(typeId, m_depthSpecConstant, offset, bitCnt);
++        uint32_t isDepth = m_module.opShiftRightLogical(typeId, m_depthSpecConstant, offset);
++        isDepth = m_module.opBitwiseAnd(typeId, isDepth, m_module.constu32(1));
+         isDepth = m_module.opIEqual(m_module.defBoolType(), isDepth, m_module.constu32(1));
+ 
+         m_module.opSelectionMerge(endLabel, spv::SelectionControlMaskNone);
+--- a/src/dxvk/dxvk_graphics.cpp
++++ b/src/dxvk/dxvk_graphics.cpp
+@@ -192,11 +192,11 @@
+     
+     VkSpecializationInfo specInfo = specData.getSpecInfo();
+     
+-    auto vsm  = createShaderModule(m_shaders.vs,  state);
+-    auto tcsm = createShaderModule(m_shaders.tcs, state);
+-    auto tesm = createShaderModule(m_shaders.tes, state);
+-    auto gsm  = createShaderModule(m_shaders.gs,  state);
+-    auto fsm  = createShaderModule(m_shaders.fs,  state);
++    auto vsm  = createShaderModule(m_shaders.vs, state, &specInfo);
++    auto tcsm = createShaderModule(m_shaders.tcs, state, &specInfo);
++    auto tesm = createShaderModule(m_shaders.tes, state, &specInfo);
++    auto gsm  = createShaderModule(m_shaders.gs, state, &specInfo);
++    auto fsm  = createShaderModule(m_shaders.fs, state, &specInfo);
+ 
+     std::vector<VkPipelineShaderStageCreateInfo> stages;
+     if (vsm)  stages.push_back(vsm.stageInfo(&specInfo));
+@@ -457,12 +457,14 @@
+ 
+   DxvkShaderModule DxvkGraphicsPipeline::createShaderModule(
+     const Rc<DxvkShader>&                shader,
+-    const DxvkGraphicsPipelineStateInfo& state) const {
++    const DxvkGraphicsPipelineStateInfo& state,
++    const VkSpecializationInfo* specInfo) const {
+     if (shader == nullptr)
+       return DxvkShaderModule();
+ 
+     const DxvkShaderCreateInfo& shaderInfo = shader->info();
+     DxvkShaderModuleCreateInfo info;
++    info.specialization = specInfo;
+ 
+     // Fix up fragment shader outputs for dual-source blending
+     if (shaderInfo.stage == VK_SHADER_STAGE_FRAGMENT_BIT) {
+--- a/src/dxvk/dxvk_graphics.h
++++ b/src/dxvk/dxvk_graphics.h
+@@ -264,7 +264,8 @@
+     
+     DxvkShaderModule createShaderModule(
+       const Rc<DxvkShader>&                shader,
+-      const DxvkGraphicsPipelineStateInfo& state) const;
++      const DxvkGraphicsPipelineStateInfo& state,
++      const VkSpecializationInfo* specInfo) const;
+     
+     Rc<DxvkShader> getPrevStageShader(
+             VkShaderStageFlagBits          stage) const;
+--- a/src/dxvk/dxvk_shader.cpp
++++ b/src/dxvk/dxvk_shader.cpp
+@@ -1,3 +1,4 @@
++#include <spirv-tools/optimizer.hpp>
+ #include "dxvk_shader.h"
+ 
+ #include <algorithm>
+@@ -161,6 +162,38 @@
+     for (uint32_t u : bit::BitMask(info.undefinedInputs))
+       eliminateInput(spirvCode, u);
+ 
++    // Bake the pipeline's existing specialization values before Metal translation.
++    // This removes inactive color/depth sampler aliases without dropping depth sampling.
++    if (info.specialization) {
++      std::unordered_map<uint32_t, std::vector<uint32_t>> values;
++      const auto& spec = *info.specialization;
++      for (uint32_t i = 0; i < spec.mapEntryCount; i++) {
++        const auto& e = spec.pMapEntries[i];
++        if (e.offset > spec.dataSize || e.size > spec.dataSize - e.offset || e.size > 4)
++          throw DxvkError("Invalid shader specialization entry");
++        uint32_t value = 0;
++        memcpy(&value, static_cast<const char*>(spec.pData) + e.offset, e.size);
++        values[e.constantID] = {value};
++      }
++      spvtools::Optimizer optimizer(SPV_ENV_VULKAN_1_2);
++      optimizer.SetMessageConsumer([](spv_message_level_t, const char*, const spv_position_t&, const char* message) {
++        Logger::err(std::string("Shader specialization: ") + message);
++      });
++      optimizer.RegisterPass(spvtools::CreateSetSpecConstantDefaultValuePass(values));
++      optimizer.RegisterPass(spvtools::CreateFreezeSpecConstantValuePass());
++      optimizer.RegisterPass(spvtools::CreateFoldSpecConstantOpAndCompositePass());
++      optimizer.RegisterPass(spvtools::CreateInlineExhaustivePass());
++      optimizer.RegisterPass(spvtools::CreateEliminateDeadFunctionsPass());
++      optimizer.RegisterPass(spvtools::CreateCCPPass());
++      optimizer.RegisterPass(spvtools::CreateDeadBranchElimPass());
++      optimizer.RegisterPass(spvtools::CreateAggressiveDCEPass(true));
++      optimizer.RegisterPass(spvtools::CreateEliminateDeadFunctionsPass());
++      std::vector<uint32_t> specialized;
++      if (!optimizer.Run(spirvCode.data(), spirvCode.dwords(), &specialized))
++        throw DxvkError("Failed to specialize shader for Metal");
++      spirvCode = SpirvCodeBuffer(specialized.size(), specialized.data());
++    }
++
+     return DxvkShaderModule(vkd, this, spirvCode);
+   }
+   
+--- a/src/dxvk/dxvk_shader.h
++++ b/src/dxvk/dxvk_shader.h
+@@ -78,6 +78,7 @@
+    * \brief Shader module create info
+    */
+   struct DxvkShaderModuleCreateInfo {
++    const VkSpecializationInfo* specialization = nullptr;
+     bool      fsDualSrcBlend  = false;
+     uint32_t  undefinedInputs = 0;
+   };
+--- a/src/dxvk/meson.build
++++ b/src/dxvk/meson.build
+@@ -1,3 +1,12 @@
++spirv_tools_source = get_option('spirv_tools_source')
++spirv_tools_build = get_option('spirv_tools_build')
++if spirv_tools_source == '' or spirv_tools_build == ''
++  error('Set spirv_tools_source and spirv_tools_build for the Metal sampler specialization fix')
++endif
++spirv_tools_inc = include_directories(spirv_tools_source / 'include')
++spirv_tools_opt = cpp.find_library('SPIRV-Tools-opt', dirs : spirv_tools_build / 'source/opt', static : true)
++spirv_tools_core = cpp.find_library('SPIRV-Tools', dirs : spirv_tools_build / 'source', static : true)
++spirv_tools_dep = declare_dependency(dependencies : [spirv_tools_opt, spirv_tools_core], include_directories : spirv_tools_inc)
+ dxvk_shaders = files([
+   'shaders/dxvk_blit_frag_1d.frag',
+   'shaders/dxvk_blit_frag_2d.frag',
+@@ -121,11 +130,12 @@
+ 
+ dxvk_lib = static_library('dxvk', dxvk_src, glsl_generator.process(dxvk_shaders), dxvk_version,
+   link_with           : [ util_lib, spirv_lib ],
+-  dependencies        : [ thread_dep, vkcommon_dep ],
++  dependencies        : [ thread_dep, vkcommon_dep, spirv_tools_dep ],
+   include_directories : [ dxvk_include_path ],
+ )
+ 
+ dxvk_dep = declare_dependency(
+   link_with           : [ dxvk_lib ],
++  dependencies        : [ spirv_tools_dep ],
+   include_directories : [ dxvk_include_path ],
+ )
+--- a/src/util/config/config.cpp
++++ b/src/util/config/config.cpp
+@@ -1,3 +1,4 @@
++#include <algorithm>
+ #include <array>
+ #include <fstream>
+ #include <sstream>
+--- a/src/util/log/log.h
++++ b/src/util/log/log.h
+@@ -18,7 +18,7 @@
+     None  = 5,
+   };
+   
+-  using PFN_wineLogOutput = int (STDMETHODCALLTYPE *)(const char *);
++  using PFN_wineLogOutput = int (__cdecl *)(const char *);
+ 
+   /**
+    * \brief Logger

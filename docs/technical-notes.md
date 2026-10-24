@@ -147,6 +147,12 @@ Altium 26.10.1, measured with MoltenVK frame statistics on an M4:
 
 ### Altium 17
 
+The launcher selects Rosetta's JIT for AD17 on Apple Silicon. A clean comparison
+improved dense PCB panning from 16 to 30 fps. The old Home-page browser can
+still consume excessive CPU on the modern Altium website; its load varied
+between runs. Set `AD17_ROSETTA_JIT=0` to leave Rosetta's default unchanged;
+an explicit `ROSETTA_DISABLE_AOT` value takes precedence. AD26 is unaffected.
+
 Optional local module patches accelerate AD17.1's bounds, grid, distance,
 memory-copy and geometry-hash helpers. They use SSE2/integer operations with
 original-code fallbacks for unsupported inputs and precision modes. The patcher
@@ -161,10 +167,10 @@ Close AD17, keep the originals, then install the outputs in `AD17/System`.
 Restore the originals to undo. These patches are separate from the installer;
 only replacement helper code is distributed here.
 
-`--frames-ahead 2` expands the GPU event-query ring from one entry to two,
+`--frames-ahead 2` or `3` expands the GPU event-query ring from one entry,
 allowing CPU/GPU overlap. Query completion checks, error handling and the
-original retry limit remain; initialization falls back to one entry if the
-second query fails. It can add one frame of input latency. Omit this option to
+original retry limit remain; initialization falls back to one entry if an
+extra query fails. Larger rings can add input latency. Omit this option to
 retain the original pacing.
 
 `--grid-batch` builds each zero-angle grid with one verified buffer lookup and
@@ -174,11 +180,20 @@ preserves the grid's vertices, caller scratch state, SIMD registers and last-err
 value. Tests compare 32,256 complete grids with the original loop, including
 large grids, guarded memory, interface ownership and unsupported-case fallbacks.
 
+`--allocator-copies` also replaces the allocator's rounded buffer copies in
+either module. It preserves their padded extents and original fallback for
+unusual lengths. The checks compare 216,768 copies across all eight entry points,
+including alignments, guard pages, rounding modes and register/FPU state.
+
+`--bucket-lookups` replaces ADVPCB's linear geometry-cache lookup with four-key
+SSE2 comparisons. It preserves first-match and alias behavior, and uses scalar
+reads at page boundaries. The diagnostic checks 66,624 cases against the original.
+
 Tests in `diagnostics/ad17-viewport-*` cover 2.8 million bounds cases, 1.44 million
 grid transforms, 2.88 million distance cases, 72,775 copies per module, 61,676
-hash cases and 18,000 query ownership/failure/ABI cases. Exceptional values,
+hash cases and 16,200 query ownership/failure/ABI cases. Exceptional values,
 rounding, aliases and guarded memory are included; stationary viewport pixels
-also match. Two-frame buffer reuse passes 8,192 GPU tile checks. Embedded
+also match. Buffer reuse with two or three frames passes 8,192 GPU tile checks per ring length. Embedded
 payloads match the assembly sources beside the tests.
 
 A dense PCB pan at full Retina resolution, with grid, antialiasing and blending
@@ -188,6 +203,38 @@ These count changed viewport images during the interior 18 seconds of a basic
 In a larger 4354×2425 rendering area, a paired comparison measured 24.7 fps with
 the per-point grid helper and 31.3–31.4 fps with batching. A fresh module launch
 measured 30.5–30.9 fps there; the stationary repaint remained pixel-identical.
+
+An optional D3D9 Metal renderer and GPU grid cache reached **42–44 fps** in the
+4354×2425 dense view on the M4. The grid stays visible and is drawn from actual
+vertices; this does not interpolate viewport images. A held pan matched the
+original redraw across all 10,548,750 viewport pixels. Large coordinates,
+unsupported layouts and precision modes retain the original grid path.
+
+Build the renderer with `bash tools/build-ad17-dxvk.sh` (CMake, Meson, Ninja,
+glslangValidator and LLVM-MinGW required). It pins DXVK-macOS, SPIRV-Tools and
+SPIRV-Headers and preserves their notices in its output. The patch fixes a Win32
+Wine logging calling-convention error and specializes existing shader constants
+to remove inactive color/depth sampler aliases before Metal compilation. Depth
+comparison remains supported. MoltenVK 1.4.2 was tested; the older bundled driver
+rejects the host-memory import used by this 32-bit renderer.
+
+With AD17 closed, back up any `d3d9.dll` beside `DXP.EXE` and install the built
+DLL there. Set `AD17_DXVK=1` and `AD17_DXVK_ICD=/path/to/MoltenVK_icd.json` in
+`config.local.sh`. Both options are AD17-only; the renderer is opt-in.
+
+For the experimental grid cache, run `bash tools/build-ad17-grid-cache.sh` and
+set `AD17_GRID_CACHE=1`. `AD17_GRID_CACHE_DIR` selects another output directory.
+The launcher waits for a responsive AD17.1 process and loads the helper; it checks
+the known module, factory and D3D9 layouts before activating. It retains grid
+vertices on the GPU while the right-button pan is active, then drops the CPU
+cache. Its shader, device, vertex-signature and coordinate guards restrict replay
+to the matching grid. Restart with `AD17_GRID_CACHE=0` to disable it. These
+helpers modify process memory only; they do not edit board files.
+
+Wine patch `0036` separately resolves multisampled backbuffers before Vulkan
+presentation. It fixes a black viewport caused by blitting a multisampled image;
+OpenGL remains the default Wine backend. That backend comparison was slower than
+the optional Metal renderer here.
 
 `diagnostics/rosetta-x87-signal.c` isolates an x87 compare/pop corruption seen
 under asynchronous signals on the tested macOS 15.7.9 Rosetta runtime, without

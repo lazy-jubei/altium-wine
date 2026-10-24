@@ -585,7 +585,15 @@ cmd_run() {
     install_dxvk "$(dirname "$exe")"
     case "$exe" in *DXP.EXE|*dxp.exe)
         grep -qw dotnet48 "$PREFIX/.altium-kit-deps" 2>/dev/null \
-            || warn "Altium 17's .NET extensions need .NET 4.8: bash \"$KIT_DIR/altium-wine.sh\" deps dotnet48" ;;
+            || warn "Altium 17's .NET extensions need .NET 4.8: bash \"$KIT_DIR/altium-wine.sh\" deps dotnet48"
+        if [ "${AD17_DXVK:-0}" = "1" ]; then
+            [ -f "$(dirname "$exe")/d3d9.dll" ] || die "Install the optional AD17 d3d9.dll beside DXP.EXE first."
+            EXTRA_DLLOVERRIDES="${EXTRA_DLLOVERRIDES:+$EXTRA_DLLOVERRIDES;}d3d9=n,b"
+            if [ -n "${AD17_DXVK_ICD:-}" ]; then
+                [ -f "$AD17_DXVK_ICD" ] || die "AD17_DXVK_ICD does not exist: $AD17_DXVK_ICD"
+                export VK_DRIVER_FILES="$AD17_DXVK_ICD"
+            fi
+        fi ;;
     esac
     wine_env "$WINEDEBUG_RUN"
     # Only Altium 18+ (X2.EXE) has the WebView2 browser the watchdog ends.
@@ -598,6 +606,11 @@ cmd_run() {
     # AD17's CefSharp GPU process spins under Wine. Software Chromium rendering
     # restores the Home page/reports without changing the PCB's Direct3D renderer.
     case "$exe" in *DXP.EXE|*dxp.exe)
+        # Prefer the Rosetta JIT path measured with AD17 on Apple Silicon.
+        # Keep an explicit setting available for comparison.
+        if [ "${AD17_ROSETTA_JIT:-1}" = "1" ]; then
+            export ROSETTA_DISABLE_AOT="${ROSETTA_DISABLE_AOT:-1}"
+        fi
         export ALTIUM_D3D9_UPLOADS="${AD17_FAST_UPLOADS:-1}"
         export ALTIUM_D3D9_UPLOAD_HINTS="${AD17_FAST_UPLOAD_HINTS:-1}"
         export ALTIUM_D3D9_QUEUED_UP="${AD17_FAST_UP_DRAWS:-1}"
@@ -608,6 +621,17 @@ cmd_run() {
         export ALTIUM_SMOOTH_SCHEMATIC_PAN="${AD17_SMOOTH_SCHEMATIC_PAN:-1}"
         if [ "${AD17_CEF_SOFTWARE_RENDERING:-1}" = "1" ]; then
             set -- --disable-gpu --disable-gpu-compositing "$@"
+        fi
+        if [ "${AD17_GRID_CACHE:-0}" = "1" ]; then
+            local grid_tools="${AD17_GRID_CACHE_DIR:-$WORK_ROOT/build/ad17-grid-cache}"
+            if [ -f "$grid_tools/ad17-grid-cache-loader.exe" ] && [ -f "$grid_tools/ad17-grid-cache.dll" ]; then
+                grid_tools="$(cd "$grid_tools" && pwd)"
+                local grid_dll="Z:${grid_tools//\//\\}\\ad17-grid-cache.dll"
+                "$WINE" "$grid_tools/ad17-grid-cache-loader.exe" --watch "$grid_dll" \
+                    > "$LOG_DIR/$(date +%Y%m%d-%H%M%S)-grid-cache.log" 2>&1 &
+            else
+                warn "AD17 grid helper is missing; run tools/build-ad17-grid-cache.sh first."
+            fi
         fi ;;
     esac
     launch_logged altium "$(dirname "$exe")" "$(basename "$exe")" "$@"

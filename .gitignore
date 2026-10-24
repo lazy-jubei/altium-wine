@@ -21,6 +21,7 @@ wine-patched/
 
 # Local trial output.
 *.out
+*.dxvk-cache
 
 tools/VaultDpiFix/bin/
 tools/VaultDpiFix/obj/

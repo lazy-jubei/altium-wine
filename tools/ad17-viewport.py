@@ -11,6 +11,13 @@ from pathlib import Path
 import struct
 
 ORIGINAL_SHA256 = "a0054c1455e8f5b2bce0d456528239666849f424add3d6f0f0368c5e2d3a00d0"
+BUCKET_SCAN = bytes.fromhex(
+    "83ec30f30f7f0424f30f7f4c2410f30f7f5424208b1685d20f8eac00000081faffffff0f0f87a00000008b4e048d44d1"
+    "f839c80f8291000000660f6e55fc660f70d20031c083fa0472358d1cc181e3ff0f000081fbe00f00007724f30f6f04c1"
+    "f30f6f4cc1100fc6c188660f76c20f50d885db751a83c00483ea0475c8eb308b1cc13b5dfc740d31db404a75b8eb200f"
+    "bcdb01d831dbf30f6f0424f30f6f4c2410f30f6f54242083c430e90000000031dbf30f6f0424f30f6f4c2410f30f6f54"
+    "242083c430e900000000f30f6f0424f30f6f4c2410f30f6f54242083c4308b164a85d2e900000000"
+)
 BOUNDS = bytes.fromhex(
     "6083ec10f30f7f04248d481839d1760b8d4a0c39c10f87be00000089c6bb06000000"
     "8b0e89cf81e70000807f81ff0000807f0f84a100000085ff750c81e1ffff7f000f8591"
@@ -55,9 +62,14 @@ HASH = bytes.fromhex(
 )
 
 FRAMES = bytes.fromhex(
-    "60e8000000005b81eb000000008b75fc8bbeec00000085ff7461837ffc02755b8b470485c0740dc7470400000000508b"
-    "10ff52088d4704506a088b86b4000000508b10ff92d801000085c078138b470485c0740c6a01508b10ff521885c0791b"
-    "6a018d86ec0000008b93d86c5500b901000000e80000000083c404618b45fc31d28990f0000000e900000000"
+    "60e8000000005b81eb000000008b75fc8bbeec00000085ff7474837ffc02726e837ffc047768bd010000008b04af85c0"
+    "740dc704af00000000508b10ff52088d04af506a088b86b4000000508b10ff92d801000085c0781b8b04af85c074146a"
+    "01508b10ff521885c07808453b6ffc72baeb1b6a018d86ec0000008b93d86c5500b901000000e80000000083c404618b"
+    "45fc31d28990f0000000e900000000"
+)
+
+ALLOCATOR = bytes.fromhex(
+    "5181f9d0ffff7f771c83f90c7e0b83c10383e1f083c10ceb05b90c000000e80000000059c359e90000000083f9047707518b08890a59c35181f9d0ffff7f771c83f9047e0b83c10383e1f883c104eb05b904000000e80000000059c359e900000000"
 )
 
 GRID_BATCH = bytes.fromhex(
@@ -100,16 +112,18 @@ def checksum(data, field):
     return ((total & 0xffff) + (total >> 16)) + len(data)
 
 
-def patch(original, geometry_hash=False, frames_ahead=1, grid_batch=False):
+def patch(original, geometry_hash=False, frames_ahead=1, grid_batch=False, allocator_copies=False, bucket_lookups=False):
     digest = hashlib.sha256(original).hexdigest()
     if digest not in (ORIGINAL_SHA256, PCB_SHA256):
         raise ValueError("Unknown or already modified AD17 module; original left untouched")
-    if frames_ahead not in (1, 2):
-        raise ValueError("Frames ahead must be 1 or 2")
+    if frames_ahead not in (1, 2, 3):
+        raise ValueError("Frames ahead must be 1, 2 or 3")
     if (geometry_hash or frames_ahead != 1) and digest != ORIGINAL_SHA256:
         raise ValueError("Hash and frame-query options apply only to Core3D.dll")
     if grid_batch and digest != PCB_SHA256:
         raise ValueError("Grid batching applies only to ADVPCB.DLL")
+    if bucket_lookups and digest != PCB_SHA256:
+        raise ValueError("Bucket lookups apply only to ADVPCB.DLL")
     data = bytearray(original)
     pe = struct.unpack_from("<I", data, 0x3c)[0]
     count = struct.unpack_from("<H", data, pe + 6)[0]
@@ -170,7 +184,7 @@ def patch(original, geometry_hash=False, frames_ahead=1, grid_batch=False):
                 branch(helper + len(HASH) - 5, new_va + fallback)
                 branch(fallback + 6, source + 6)
                 entries.append((source, new_va + helper))
-        if frames_ahead == 2:
+        if frames_ahead >= 2:
             allocation = offset(0x55868a)
             initialization = offset(0x5586e6)
             if (data[allocation:allocation + 2] != b"\x6a\x01" or
@@ -179,9 +193,9 @@ def patch(original, geometry_hash=False, frames_ahead=1, grid_batch=False):
                 raise ValueError("Unexpected frame-query constructor")
             helper = append(FRAMES)
             struct.pack_into("<I", payload, helper + 9, new_va + helper + 6)
-            branch(helper + 0x73, 0xe5fc, opcode=0xe8)
+            branch(helper + 0x86, 0xe5fc, opcode=0xe8)
             branch(helper + len(FRAMES) - 5, 0x5586f1)
-            data[allocation + 1] = 2
+            data[allocation + 1] = frames_ahead
             entries = list(entries) + [(0x5586e6, new_va + helper)]
     else:
         grid = append(GRID)
@@ -206,6 +220,32 @@ def patch(original, geometry_hash=False, frames_ahead=1, grid_batch=False):
             branch(batch + 0x3f5, 0xfd10c1)
             branch(batch + 0x3fa, 0xfd11be)
             entries = list(entries) + [(0xfd10ae, new_va + batch)]
+    if bucket_lookups:
+        scan = append(BUCKET_SCAN)
+        branch(scan + 0xaa, 0x696ff3)
+        branch(scan + 0xc5, 0x697000)
+        branch(scan + 0xe3, 0x696fe3)
+        entries = list(entries) + [(0x696fde, new_va + scan)]
+    if allocator_copies:
+        is_core = digest == ORIGINAL_SHA256
+        copy_entry = 0x7274 if is_core else 0x75f4
+        copy_target = next(target for source, target in entries if source == copy_entry)
+        long_entries = (0x53e0, 0x182c4, 0x19938) if is_core else (0x5760, 0x1d2a0, 0x1ec10)
+        short_entry = 0x182f4 if is_core else 0x1d2d0
+        long_original = data[offset(long_entries[0]):offset(long_entries[0]) + 0x2d]
+        if (long_original[:9] != bytes.fromhex("83e90c01c801caf7d9") or
+                any(data[offset(at):offset(at) + 0x2d] != long_original for at in long_entries) or
+                data[offset(short_entry):offset(short_entry) + 5] != bytes.fromhex("83e9047e18")):
+            raise ValueError("Unexpected allocator copy helpers")
+        helper = append(ALLOCATOR)
+        long_fallback = append(long_original)
+        short_fallback = append(data[offset(short_entry):offset(short_entry) + 0x22])
+        branch(helper + 0x1e, copy_target, opcode=0xe8)
+        branch(helper + 0x55, copy_target, opcode=0xe8)
+        branch(helper + 0x26, new_va + long_fallback)
+        branch(helper + 0x5d, new_va + short_fallback)
+        entries = list(entries) + [(at, new_va + helper) for at in long_entries]
+        entries.append((short_entry, new_va + helper + 0x2b))
     for source, target in entries:
         at = offset(source)
         data[at:at + 5] = b"\xe9" + struct.pack("<i", target - source - 5)
@@ -228,17 +268,22 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--geometry-hash", action="store_true",
                         help="Experimental faster, bit-exact Core3D geometry hashing")
-    parser.add_argument("--frames-ahead", type=int, choices=(1, 2), default=1,
-                        help="Core3D GPU frame-query ring length (2 improves throughput)")
+    parser.add_argument("--frames-ahead", type=int, choices=(1, 2, 3), default=1,
+                        help="Core3D GPU frame-query ring length (2 or 3 allow more CPU/GPU overlap)")
     parser.add_argument("--grid-batch", action="store_true",
                         help="Build verified zero-angle grids with one buffer lookup per batch")
+    parser.add_argument("--allocator-copies", action="store_true",
+                        help="Use SSE copies for the allocator's rounded buffer moves")
+    parser.add_argument("--bucket-lookups", action="store_true",
+                        help="Compare four geometry-cache keys per SSE2 lookup")
     args = parser.parse_args()
     if args.output.exists() or args.original.resolve() == args.output.resolve():
         parser.error("Output must be a new, separate file")
     created = False
     try:
         result = patch(args.original.read_bytes(), geometry_hash=args.geometry_hash,
-                       frames_ahead=args.frames_ahead, grid_batch=args.grid_batch)
+                       frames_ahead=args.frames_ahead, grid_batch=args.grid_batch,
+                       allocator_copies=args.allocator_copies, bucket_lookups=args.bucket_lookups)
         with args.output.open("xb") as stream:
             created = True
             stream.write(result)
