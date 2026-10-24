@@ -154,7 +154,7 @@ accepts only two verified original module hashes and writes separate files:
 
 ```bash
 python3 tools/ad17-viewport.py /path/to/original/Core3D.dll /tmp/Core3D.dll --geometry-hash --frames-ahead 2
-python3 tools/ad17-viewport.py /path/to/original/ADVPCB.DLL /tmp/ADVPCB.DLL
+python3 tools/ad17-viewport.py /path/to/original/ADVPCB.DLL /tmp/ADVPCB.DLL --grid-batch
 ```
 
 Close AD17, keep the originals, then install the outputs in `AD17/System`.
@@ -167,6 +167,13 @@ original retry limit remain; initialization falls back to one entry if the
 second query fails. It can add one frame of input latency. Omit this option to
 retain the original pacing.
 
+`--grid-batch` builds each zero-angle grid with one verified buffer lookup and
+interface retain instead of repeating them for every point. Buffer layout,
+capacity and precision checks retain the original loop for other cases. It
+preserves the grid's vertices, caller scratch state, SIMD registers and last-error
+value. Tests compare 32,256 complete grids with the original loop, including
+large grids, guarded memory, interface ownership and unsupported-case fallbacks.
+
 Tests in `diagnostics/ad17-viewport-*` cover 2.8 million bounds cases, 1.44 million
 grid transforms, 2.88 million distance cases, 72,775 copies per module, 61,676
 hash cases and 18,000 query ownership/failure/ABI cases. Exceptional values,
@@ -178,6 +185,9 @@ A dense PCB pan at full Retina resolution, with grid, antialiasing and blending
 retained, measured **31.7–32.2 fps** with two queries versus **26.6 fps** with one.
 These count changed viewport images during the interior 18 seconds of a basic
 20-second pan; they are measurements of one board and camera on the M4.
+In a larger 4354×2425 rendering area, a paired comparison measured 24.7 fps with
+the per-point grid helper and 31.3–31.4 fps with batching. A fresh module launch
+measured 30.5–30.9 fps there; the stationary repaint remained pixel-identical.
 
 `diagnostics/rosetta-x87-signal.c` isolates an x87 compare/pop corruption seen
 under asynchronous signals on the tested macOS 15.7.9 Rosetta runtime, without

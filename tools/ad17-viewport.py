@@ -60,6 +60,32 @@ FRAMES = bytes.fromhex(
     "6a018d86ec0000008b93d86c5500b901000000e80000000083c404618b45fc31d28990f0000000e900000000"
 )
 
+GRID_BATCH = bytes.fromhex(
+    "6081ecc0000000f30f7f0424f30f7f4c2410f30f7f542420f30f7f5c2430f30f7f642440f30f7f6c2450f30f7f742460"
+    "f30f7f7c247085db0f88720300008b45ac85c00f886703000040898424a000000089d941898c24ac000000898c249c00"
+    "0000f7e185d20f854403000085c00f883c03000089842490000000837ddc000f852b03000083bd0cffffff000f851e03"
+    "0000837dc0000f8514030000817dc4000000800f850703000066817dc8ff3f0f85fb0200008b45d00b45d40f85ef0200"
+    "0066f745d8ff7f0f85e3020000d9bc24800000000fb7842480000000253f0c000083f83f0f85c60200000fae9c248400"
+    "00008b84248400000025807f00003d801f00000f85a70200000fb784248000000025000300003d000100000f848f0200"
+    "008984248800000064a134000000898424a4000000e8000000005b8d83c502000050ff93f1ad7e118b9424a400000064"
+    "89153400000085c00f845202000089c38b45fc85c00f84450200008b108d8be13f5000394a240f85340200008b78f485"
+    "ff0f842902000089bc24980000008b178d8b459e5200394a300f85110200008d8be39e5200394a040f85020200008d8b"
+    "ed9e5200394a080f85f3010000837ff81c0f85e90100008b8c2490000000394ffc0f82d90100008b47f485c00f84ce01"
+    "00008984248c00000089c8ba1c000000f7e285d20f85b60100000384248c0000000f82a90100008d950cffffff8b45fc"
+    "8b08ff51248b850cffffff3b8424980000000f85880100008b10ff52303b84248c0000000f857601000089c78b75ec2b"
+    "751889b424940000008b55282b5514f30f7e5514660f70d2e1f30fe6d28b451c898424b0000000c78424b40000000000"
+    "0000c78424b800000000000000c78424bc000000000080bff30f6f9c24b00000008b45e88b9c24880000008b8c24a000"
+    "0000660f6ec6660f6eca660f62c1f30fe6c085db7507660f5ac00f5ac0660f58c2660f5ac00f1307f30f7f5f08894718"
+    "03752c83c71c4975c9ff8c249c000000740c0355208bb42494000000ebadc78568ffffff00000000c7856cffffff0000"
+    "0000c78570ffffff000080bf2b752c899514ffffff660f6ec6660f6eca660f62c1f30fe6c0f20f1145b8660f1745b08b"
+    "8c2490000000894ddc49898c24d80000008b8c24ac000000894de08b8c24a0000000894de4c745a80000000083ef1c89"
+    "bc24dc000000898424d4000000c78424d000000000000000f30f6f0424f30f6f4c2410f30f6f542420f30f6f5c2430f3"
+    "0f6f642440f30f6f6c2450f30f6f742460f30f6f7c247081c4c000000061eb4af30f6f0424f30f6f4c2410f30f6f5424"
+    "20f30f6f5c2430f30f6f642440f30f6f6c2450f30f6f742460f30f6f7c247081c4c00000006185db781043895da8c745"
+    "e000000000e900000000e90000000043006f0072006500330044002e0064006c006c000000"
+)
+
+
 def align(value, boundary):
     return (value + boundary - 1) // boundary * boundary
 
@@ -74,7 +100,7 @@ def checksum(data, field):
     return ((total & 0xffff) + (total >> 16)) + len(data)
 
 
-def patch(original, geometry_hash=False, frames_ahead=1):
+def patch(original, geometry_hash=False, frames_ahead=1, grid_batch=False):
     digest = hashlib.sha256(original).hexdigest()
     if digest not in (ORIGINAL_SHA256, PCB_SHA256):
         raise ValueError("Unknown or already modified AD17 module; original left untouched")
@@ -82,6 +108,8 @@ def patch(original, geometry_hash=False, frames_ahead=1):
         raise ValueError("Frames ahead must be 1 or 2")
     if (geometry_hash or frames_ahead != 1) and digest != ORIGINAL_SHA256:
         raise ValueError("Hash and frame-query options apply only to Core3D.dll")
+    if grid_batch and digest != PCB_SHA256:
+        raise ValueError("Grid batching applies only to ADVPCB.DLL")
     data = bytearray(original)
     pe = struct.unpack_from("<I", data, 0x3c)[0]
     count = struct.unpack_from("<H", data, pe + 6)[0]
@@ -168,6 +196,16 @@ def patch(original, geometry_hash=False, frames_ahead=1):
         branch(distance + len(DISTANCE) - 5, new_va + fallback)
         entries = ((old_grid, new_va + grid), (old_distance, new_va + distance),
                    (0x75f4, new_va + append(MOVE)))
+        if grid_batch:
+            if data[offset(0xfd10ae):offset(0xfd10ae) + 8] != bytes.fromhex("85db0f8c08010000"):
+                raise ValueError("Unexpected grid-loop entry")
+            batch = append(GRID_BATCH)
+            # Resolve the verified Core3D getters through the existing GetModuleHandleW IAT.
+            struct.pack_into("<i", payload, batch + 0x144,
+                             0x27ec0d0 - (new_va + batch + 0x13a))
+            branch(batch + 0x3f5, 0xfd10c1)
+            branch(batch + 0x3fa, 0xfd11be)
+            entries = list(entries) + [(0xfd10ae, new_va + batch)]
     for source, target in entries:
         at = offset(source)
         data[at:at + 5] = b"\xe9" + struct.pack("<i", target - source - 5)
@@ -192,13 +230,15 @@ def main():
                         help="Experimental faster, bit-exact Core3D geometry hashing")
     parser.add_argument("--frames-ahead", type=int, choices=(1, 2), default=1,
                         help="Core3D GPU frame-query ring length (2 improves throughput)")
+    parser.add_argument("--grid-batch", action="store_true",
+                        help="Build verified zero-angle grids with one buffer lookup per batch")
     args = parser.parse_args()
     if args.output.exists() or args.original.resolve() == args.output.resolve():
         parser.error("Output must be a new, separate file")
     created = False
     try:
         result = patch(args.original.read_bytes(), geometry_hash=args.geometry_hash,
-                       frames_ahead=args.frames_ahead)
+                       frames_ahead=args.frames_ahead, grid_batch=args.grid_batch)
         with args.output.open("xb") as stream:
             created = True
             stream.write(result)
