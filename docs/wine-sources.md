@@ -40,6 +40,10 @@ retained, including its FreeType, Vulkan and Staging support.
 `0034` extends the floating-panel activation fix to modern Altium (`X2.EXE`).
 `0035` replaces mouse interception with a guarded view-hide activation transfer,
 including injected input, scripted closes and nested deactivation callbacks.
+`0036` resolves multisampled Vulkan backbuffers before presentation and waits
+for image acquisition at the first transfer use.
+`0037` enables bounded Direct2D primitive caching and ordered solid drawing
+batches by default; either optimization can be disabled with its environment switch.
 The 64-bit Direct3D modules keep the stock renderer.
 `wow64cpu.dll` and `user32.dll` are transformed from the checksum-pinned stock
 bundle by two Python patchers in `patches/`. The server is compiled from source. No other stock modules are

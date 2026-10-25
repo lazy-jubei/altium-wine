@@ -1,4 +1,4 @@
-// GPU readback comparison for the opt-in Direct2D cache and ordered batch.
+// GPU readback comparison for the default Direct2D cache and ordered batch.
 // Build with x86_64-w64-mingw32-g++ -O2 -static -ld3d11 -ld2d1 -ldwrite -ldxgi -ldxguid -luser32.
 #include <windows.h>
 #include <d3d11.h>

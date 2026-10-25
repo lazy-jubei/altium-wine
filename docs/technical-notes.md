@@ -504,11 +504,13 @@ It flushes at clip, target, GDI, Clear, Flush and EndDraw boundaries and uses
 the original path for unsupported brushes and stroke transforms. Strokes retain
 the original extrusion and transform arithmetic to avoid edge-coverage changes.
 
-The normal AD26 launcher enables `AD26_D2D_BATCH=1` and
-`AD26_D2D_PRIMITIVE_CACHE=1`. Set either to `0` in `config.local.sh` to disable
-it. Build current sources for these changes; release v1.1.3 predates this patch.
+Both optimizations are enabled by default in the patched DLL, including when
+launched outside the kit. Set `AD26_D2D_BATCH=0` or
+`AD26_D2D_PRIMITIVE_CACHE=0` in `config.local.sh` to disable either one. Direct
+Wine launches can use `WINE_D2D_BATCH=0` or `WINE_D2D_PRIMITIVE_CACHE=0`.
+These changes are included in release v1.2.0.
 The [GPU diagnostics](../diagnostics/README.md#ad26-direct2d-batching) compare
-16 cases and all four feature combinations with both factory types: all
+16 cases, unset defaults and all four feature combinations with both factory types: all
 4,194,304 output bytes match.
 
 A dense controller schematic measured **20.5–21.9 redraws/s off** and

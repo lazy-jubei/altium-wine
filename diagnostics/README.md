@@ -219,13 +219,16 @@ patched Wine bundle. With the Wine prefix and MoltenVK manifest selected:
 export WINEDLLOVERRIDES='d3d11=n,b;d3d10core=n,b'
 WINE_D2D_PRIMITIVE_CACHE=0 WINE_D2D_BATCH=0 wine d2d-check.exe off.bin
 WINE_D2D_PRIMITIVE_CACHE=1 WINE_D2D_BATCH=1 WINE_D2D_BATCH_STATS=1 wine d2d-check.exe on.bin
+env -u WINE_D2D_PRIMITIVE_CACHE -u WINE_D2D_BATCH WINE_D2D_BATCH_STATS=1 wine d2d-check.exe default.bin
 cmp off.bin on.bin
+cmp off.bin default.bin
 ```
 
 Add `--multithreaded` to exercise a multithreaded factory. Verify the enabled
 run logs `D2D_BATCH pipeline ready`; a silently failing shader can otherwise
 make a fallback-only comparison look successful. All four cache/batch
-combinations matched the 4,194,304 reference bytes with both factory types.
+combinations and the unset defaults matched the 4,194,304 reference bytes with
+both factory types. Both optimizations default to enabled; `0` disables them.
 
 ## D3D11 GDI dirty rectangles
 

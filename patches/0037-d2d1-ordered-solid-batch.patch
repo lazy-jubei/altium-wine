@@ -1,8 +1,9 @@
 From: Altium-on-Wine kit
 Subject: d2d1: cache canonical primitives and batch ordered solid draws
 
-Base: Wine 11.16 with kit patch 0003. Opt-in with WINE_D2D_PRIMITIVE_CACHE=1
-and WINE_D2D_BATCH=1. Preserve draw order, clips and fallback boundaries.
+Base: Wine 11.16 with kit patch 0003. Enabled by default; set
+WINE_D2D_PRIMITIVE_CACHE=0 or WINE_D2D_BATCH=0 to disable either optimization.
+Preserve draw order, clips and fallback boundaries.
 
 --- a/dlls/d2d1/device.c
 +++ b/dlls/d2d1/device.c
@@ -53,7 +54,7 @@ and WINE_D2D_BATCH=1. Preserve draw order, clips and fallback boundaries.
 +    char value[8];
 +    if (enabled == -1)
 +        InterlockedExchange(&enabled,
-+                GetEnvironmentVariableA("WINE_D2D_PRIMITIVE_CACHE", value, sizeof(value)) == 1 && value[0] == '1');
++                !(GetEnvironmentVariableA("WINE_D2D_PRIMITIVE_CACHE", value, sizeof(value)) == 1 && value[0] == '0'));
 +    return enabled;
 +}
 +
@@ -404,7 +405,7 @@ and WINE_D2D_BATCH=1. Preserve draw order, clips and fallback boundaries.
 +    char value[8];
 +    if (enabled == -1)
 +        InterlockedExchange(
-+                &enabled, GetEnvironmentVariableA("WINE_D2D_BATCH", value, sizeof(value)) == 1 && value[0] == '1');
++                &enabled, !(GetEnvironmentVariableA("WINE_D2D_BATCH", value, sizeof(value)) == 1 && value[0] == '0'));
 +    return enabled;
 +}
 +

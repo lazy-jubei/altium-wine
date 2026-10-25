@@ -10,10 +10,10 @@ Altium 365 works, including project cloning.
 
 ## Install
 
-Get the Altium offline installer from your Altium account, then download and run the [kit installer](https://github.com/lazy-jubei/altium-wine/releases/tag/v1.1.3):
+Get the Altium offline installer from your Altium account, then download and run the [kit installer](https://github.com/lazy-jubei/altium-wine/releases/tag/v1.2.0):
 
 ```bash
-curl -fL https://github.com/lazy-jubei/altium-wine/releases/download/v1.1.3/install.sh -o install.sh
+curl -fL https://github.com/lazy-jubei/altium-wine/releases/download/v1.2.0/install.sh -o install.sh
 bash install.sh
 ```
 
