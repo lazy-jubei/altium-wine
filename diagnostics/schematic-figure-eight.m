@@ -20,6 +20,18 @@ static double now(void)
 static void post(CGEventSourceRef source, CGEventType type, double x, double y)
 {
     CGEventRef event = CGEventCreateMouseEvent(source, type, CGPointMake(x, y), kCGMouseButtonRight);
+    static CGPoint last;
+    static BOOL have_last;
+    if (type == kCGEventRightMouseDragged && have_last)
+    {
+        CGEventSetIntegerValueField(event, kCGMouseEventDeltaX, lrint(x) - lrint(last.x));
+        CGEventSetIntegerValueField(event, kCGMouseEventDeltaY, lrint(y) - lrint(last.y));
+    }
+    last = CGPointMake(x, y);
+    have_last = YES;
+    CGEventSetIntegerValueField(event, kCGMouseEventButtonNumber, 1);
+    CGEventSetIntegerValueField(event, kCGMouseEventClickState, 1);
+    CGEventSetDoubleValueField(event, kCGMouseEventPressure, 1.0);
     CGEventSetFlags(event, 0);
     CGEventPost(kCGHIDEventTap, event);
     CFRelease(event);
@@ -55,7 +67,8 @@ int main(int argc, char **argv)
         NSString *title = item[(id)kCGWindowName];
         CGRect bounds;
         BOOL valid = CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)item[(id)kCGWindowBounds], &bounds);
-        valid = valid && [[title lowercaseString] containsString:@".schdoc"] &&
+        valid = valid && ([[title lowercaseString] containsString:@".schdoc"] ||
+            [[title lowercaseString] containsString:@".prjpcb"]) &&
             [NSWorkspace sharedWorkspace].frontmostApplication.processIdentifier == pid &&
             CGRectContainsRect(CGRectInset(bounds, 12, 90), CGRectMake(x - rx, y - ry, rx * 2, ry * 2));
         CFRelease(info);
@@ -81,6 +94,11 @@ int main(int argc, char **argv)
         unsigned int events = 0;
         while (!interrupted && now() - start < seconds)
         {
+            if (!(events % 12) && [NSWorkspace sharedWorkspace].frontmostApplication.processIdentifier != pid)
+            {
+                interrupted = 1;
+                break;
+            }
             double elapsed = now() - start, phase = elapsed * 2 * M_PI / period;
             double fraction = fmod(elapsed, period) * 2 / period;
             post(source, kCGEventRightMouseDragged,

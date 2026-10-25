@@ -283,12 +283,24 @@ ensure_dxvk() {
 }
 
 install_dxvk() {  # copy d3d11/d3d10core next to X2.EXE (extra.reg limits the native override to X2.EXE)
-    local ad="$1" f
+    local ad="$1" f source
     [ -f "$ad/X2.EXE" ] || return 0
-    ensure_dxvk
+    source="${AD26_DXVK_DIR:-}"
+    if [ -z "$source" ]; then
+        ensure_dxvk
+        source="$DXVK_DIR"
+    fi
     for f in d3d11.dll d3d10core.dll; do
-        cmp -s "$DXVK_DIR/$f" "$ad/$f" && continue
-        cp "$DXVK_DIR/$f" "$ad/$f" || die "Couldn't copy $f into $ad"
+        [ -f "$source/$f" ] || die "Missing renderer DLL: $source/$f"
+        cmp -s "$source/$f" "$ad/$f" && continue
+        if [ -f "$ad/$f" ] && lsof -t "$ad/$f" >/dev/null 2>&1; then
+            die "Close Altium before changing its renderer ($f is in use)."
+        fi
+    done
+    for f in d3d11.dll d3d10core.dll; do
+        cmp -s "$source/$f" "$ad/$f" && continue
+        cp "$source/$f" "$ad/$f.new" && mv -f "$ad/$f.new" "$ad/$f" \
+            || die "Couldn't install $f into $ad"
         say "Installed DXVK $f for Altium"
     done
 }
@@ -600,7 +612,10 @@ cmd_run() {
     case "$exe" in *X2.EXE|*x2.exe) [ "${KILL_WEBVIEW2:-1}" = "1" ] && webview2_watchdog & ;; esac
     # Match the sRGB GDI surfaces on both versions, including AD26's UI around its GPU canvas.
     case "$exe" in
-        *X2.EXE|*x2.exe) export ALTIUM_MAC_SRGB="${AD26_SRGB_WINDOWS:-1}" ;;
+        *X2.EXE|*x2.exe)
+            export ALTIUM_MAC_SRGB="${AD26_SRGB_WINDOWS:-1}"
+            export WINE_D2D_PRIMITIVE_CACHE="${AD26_D2D_PRIMITIVE_CACHE:-1}"
+            export WINE_D2D_BATCH="${AD26_D2D_BATCH:-1}" ;;
         *DXP.EXE|*dxp.exe) export ALTIUM_MAC_SRGB="${AD17_SRGB_WINDOWS:-1}" ;;
     esac
     # AD17's CefSharp GPU process spins under Wine. Software Chromium rendering
@@ -634,7 +649,23 @@ cmd_run() {
             fi
         fi ;;
     esac
-    launch_logged altium "$(dirname "$exe")" "$(basename "$exe")" "$@"
+    # Altium interprets a Unix path as a new, empty document name. Translate
+    # existing local files while retaining Windows paths and command switches.
+    local arg converted windows_args=()
+    for arg in "$@"; do
+        if [ -e "$arg" ]; then
+            converted="$(WINEDEBUG=-all "$WINE" winepath -w "$arg" 2>/dev/null)" \
+                || die "Couldn't translate document path: $arg"
+            windows_args+=("$converted")
+        else
+            windows_args+=("$arg")
+        fi
+    done
+    if [ "${#windows_args[@]}" -eq 0 ]; then
+        launch_logged altium "$(dirname "$exe")" "$(basename "$exe")"
+    else
+        launch_logged altium "$(dirname "$exe")" "$(basename "$exe")" "${windows_args[@]}"
+    fi
 }
 
 # Altium's Microsoft Edge WebView2 browser (it only drives the Home Page, which renders blank

@@ -27,7 +27,7 @@ The installer sets up Wine and fonts and creates `~/Applications/Altium Designer
 
 Optimizations include:
 
-- Cached Direct2D state, glyphs and geometry for faster schematics.
+- Cached Direct2D geometry and ordered AD26 draw batching for faster schematics.
 - Matched color spaces, parallel copies and native AD17 pan compositing.
 - Queued Direct3D uploads, [AD17 PCB helpers and optional Metal grid caching](docs/technical-notes.md#altium-17).
 - Fixes for hidden dialogs, floating panels, tooltip input and Vault freezes.

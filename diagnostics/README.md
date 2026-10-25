@@ -1,4 +1,4 @@
-# AD17 diagnostics
+# Rendering and compatibility diagnostics
 
 ## Model-server pipe writes
 
@@ -199,3 +199,45 @@ The baseline must deadlock. The patched helper must finish direct, nested, semap
 `VaultCodecCheck` is a .NET Framework 4.8/x86 probe for AD17’s parameter decoder. Build its project, then run the executable under Wine with a local `VaultExplorer.Common.dll` path (and optionally the AD17 `System` directory). It checks valid encodings, literal/truncated underscores and the two legacy suffixes: original 7/13, corrected 13/13. No vendor assemblies are included.
 
 `tools/VaultDpiFix` is a separate local AD17.1 layout correction; see the technical notes. It never overwrites its input or accepts an unknown Altium assembly.
+
+## AD26 Direct2D batching
+
+`d2d-primitive-check.cpp` writes GPU pixels for 16 cases covering solid fills,
+strokes, text, transparency, clipping, transforms, DPI changes, Clear/Flush,
+buffer growth and geometry-cache eviction. It uses its own textures and no
+Altium files. Build with LLVM-MinGW:
+
+```sh
+x86_64-w64-mingw32-g++ d2d-primitive-check.cpp -O2 -static -o d2d-check.exe \
+  -ld3d11 -ld2d1 -ldwrite -ldxgi -ldxguid -luser32
+```
+
+Put the AD26 `d3d11.dll` and `d3d10core.dll` beside the executable and use the
+patched Wine bundle. With the Wine prefix and MoltenVK manifest selected:
+
+```sh
+export WINEDLLOVERRIDES='d3d11=n,b;d3d10core=n,b'
+WINE_D2D_PRIMITIVE_CACHE=0 WINE_D2D_BATCH=0 wine d2d-check.exe off.bin
+WINE_D2D_PRIMITIVE_CACHE=1 WINE_D2D_BATCH=1 WINE_D2D_BATCH_STATS=1 wine d2d-check.exe on.bin
+cmp off.bin on.bin
+```
+
+Add `--multithreaded` to exercise a multithreaded factory. Verify the enabled
+run logs `D2D_BATCH pipeline ready`; a silently failing shader can otherwise
+make a fallback-only comparison look successful. All four cache/batch
+combinations matched the 4,194,304 reference bytes with both factory types.
+
+## D3D11 GDI dirty rectangles
+
+`d3d11-gdi-rect.c` fills a 16×16 GDI-compatible texture with distinct rows,
+updates three dirty rectangles below the first row, then verifies every pixel
+through GPU readback. Build with:
+
+```sh
+x86_64-w64-mingw32-gcc d3d11-gdi-rect.c -O2 -o gdi-rect.exe \
+  -ld3d11 -ldxgi -ldxguid -lgdi32 -luser32
+```
+
+Run beside either renderer's DLLs with the native overrides above. The shipped
+DXVK build fails the three partial updates (32, 80 and 92 bad pixels).
+`patches/dxvk-ad26-gdi.patch` passes all four 256-pixel checks.

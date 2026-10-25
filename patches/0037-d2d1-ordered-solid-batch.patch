@@ -1,0 +1,826 @@
+From: Altium-on-Wine kit
+Subject: d2d1: cache canonical primitives and batch ordered solid draws
+
+Base: Wine 11.16 with kit patch 0003. Opt-in with WINE_D2D_PRIMITIVE_CACHE=1
+and WINE_D2D_BATCH=1. Preserve draw order, clips and fallback boundaries.
+
+--- a/dlls/d2d1/device.c
++++ b/dlls/d2d1/device.c
+@@ -18,8 +18,11 @@
+ 
+ #include "d2d1_private.h"
+ #include <d3dcompiler.h>
++#include <stdio.h>
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(d2d);
++static void d2d_solid_batch_flush(struct d2d_device_context *context);
++static void d2d_solid_batch_free(struct d2d_device_context *context);
+ 
+ #define INITIAL_CLIP_STACK_SIZE 4
+ 
+@@ -274,6 +277,7 @@
+     unsigned int offset;
+     D3D11_VIEWPORT vp;
+ 
++
+     vp.TopLeftX = 0;
+     vp.TopLeftY = 0;
+     vp.Width = render_target->pixel_size.width;
+@@ -421,6 +425,7 @@
+     {
+         unsigned int i, j, k;
+ 
++        d2d_solid_batch_free(context);
+         d2d_device_context_restore_app_state(context);
+         d2d_clip_stack_cleanup(&context->clip_stack);
+         IDWriteRenderingParams_Release(context->default_text_rendering_params);
+@@ -435,6 +440,8 @@
+         ID3D11PixelShader_Release(context->ps);
+         ID3D11Buffer_Release(context->vs_cb);
+         if (context->unit_rect) ID2D1RectangleGeometry_Release(context->unit_rect);
++        for (i = 0; i < ARRAY_SIZE(context->primitive_cache); ++i)
++            if (context->primitive_cache[i].geometry) ID2D1Geometry_Release(context->primitive_cache[i].geometry);
+         for (i = 0; i < D2D_SHAPE_TYPE_COUNT; ++i)
+         {
+             ID3D11VertexShader_Release(context->shape_resources[i].vs);
+@@ -729,6 +736,121 @@
+     return hr;
+ }
+ 
++static BOOL d2d_primitive_cache_enabled(void)
++{
++    static LONG enabled = -1;
++    char value[8];
++    if (enabled == -1)
++        InterlockedExchange(&enabled,
++                GetEnvironmentVariableA("WINE_D2D_PRIMITIVE_CACHE", value, sizeof(value)) == 1 && value[0] == '1');
++    return enabled;
++}
++
++/* Keep canonical geometry and its immutable GPU buffers; translate only the
++ * drawing transform. Pattern brushes retain the ordinary coordinate path. */
++static BOOL d2d_cached_primitive_locked(struct d2d_device_context *context, unsigned kind, float x, float y,
++        float width, float height, ID2D1Brush *brush, float stroke_width, ID2D1StrokeStyle *style, BOOL fill)
++{
++    D2D1_MATRIX_3X2_F saved, *transform = &context->drawing_state.transform;
++    ID2D1Geometry *geometry;
++    UINT32 w, h, index, base, probe;
++    HRESULT hr;
++    struct d2d_brush *b = unsafe_impl_from_ID2D1Brush(brush);
++
++    if (!d2d_primitive_cache_enabled() || !b || b->type != D2D_BRUSH_TYPE_SOLID
++            || context->target.type == D2D_TARGET_COMMAND_LIST || !isfinite(x) || !isfinite(y) || !isfinite(width)
++            || !isfinite(height) || (kind && (width <= 0 || height <= 0)) || (!width && !height)
++        || (!kind && width && height))
++        return FALSE;
++    memcpy(&w, &width, sizeof(w));
++    memcpy(&h, &height, sizeof(h));
++    w ^= h * 0x9e3779b1u ^ kind * 0xc2b2ae35u;
++    w ^= w >> 16;
++    w *= 0x7feb352du;
++    w ^= w >> 15;
++    base = (w & (ARRAY_SIZE(context->primitive_next) - 1)) * 4;
++    for (probe = 0; probe < 4; ++probe)
++    {
++        index = base + probe;
++        if (context->primitive_cache[index].geometry && context->primitive_cache[index].kind == kind
++                && context->primitive_cache[index].size.x == width && context->primitive_cache[index].size.y == height)
++            break;
++    }
++    if (probe == 4)
++        index = base + (context->primitive_next[base / 4]++ & 3);
++    geometry = context->primitive_cache[index].geometry;
++    if (!geometry || context->primitive_cache[index].size.x != width || context->primitive_cache[index].size.y != height
++            || context->primitive_cache[index].kind != kind)
++    {
++        if (kind == 0)
++        {
++            ID2D1PathGeometry *path;
++            ID2D1GeometrySink *sink;
++            D2D1_POINT_2F end = { width, height }, zero = { 0.0f, 0.0f };
++            if (FAILED(ID2D1Factory_CreatePathGeometry(context->factory, &path)))
++                return FALSE;
++            if (FAILED(ID2D1PathGeometry_Open(path, &sink)))
++            {
++                ID2D1PathGeometry_Release(path);
++                return FALSE;
++            }
++            ID2D1GeometrySink_BeginFigure(sink, zero, D2D1_FIGURE_BEGIN_HOLLOW);
++            ID2D1GeometrySink_AddLine(sink, end);
++            ID2D1GeometrySink_EndFigure(sink, D2D1_FIGURE_END_OPEN);
++            hr = ID2D1GeometrySink_Close(sink);
++            ID2D1GeometrySink_Release(sink);
++            geometry = (ID2D1Geometry *)path;
++        }
++        else if (kind == 1)
++        {
++            D2D1_RECT_F rect = { 0.0f, 0.0f, width, height };
++            ID2D1RectangleGeometry *rect_geometry = NULL;
++            hr = ID2D1Factory_CreateRectangleGeometry(context->factory, &rect, &rect_geometry);
++            geometry = (ID2D1Geometry *)rect_geometry;
++        }
++        else
++        {
++            D2D1_ELLIPSE ellipse = { { 0.0f, 0.0f }, width, height };
++            ID2D1EllipseGeometry *ellipse_geometry = NULL;
++            hr = ID2D1Factory_CreateEllipseGeometry(context->factory, &ellipse, &ellipse_geometry);
++            geometry = (ID2D1Geometry *)ellipse_geometry;
++        }
++        if (FAILED(hr))
++        {
++            if (geometry)
++                ID2D1Geometry_Release(geometry);
++            return FALSE;
++        }
++        if (context->primitive_cache[index].geometry)
++            ID2D1Geometry_Release(context->primitive_cache[index].geometry);
++        context->primitive_cache[index].geometry = geometry;
++        context->primitive_cache[index].size.x = width;
++        context->primitive_cache[index].size.y = height;
++        context->primitive_cache[index].kind = kind;
++    }
++    saved = *transform;
++    transform->_31 += x * transform->_11 + y * transform->_21;
++    transform->_32 += x * transform->_12 + y * transform->_22;
++    if (fill)
++        ID2D1DeviceContext6_FillGeometry(&context->ID2D1DeviceContext6_iface, geometry, brush, NULL);
++    else
++        ID2D1DeviceContext6_DrawGeometry(&context->ID2D1DeviceContext6_iface, geometry, brush, stroke_width, style);
++    *transform = saved;
++    return TRUE;
++}
++
++static BOOL d2d_cached_primitive(struct d2d_device_context *context, unsigned kind, float x, float y, float width,
++        float height, ID2D1Brush *brush, float stroke_width, ID2D1StrokeStyle *style, BOOL fill)
++{
++    BOOL ret;
++    if (context->cs)
++        EnterCriticalSection(context->cs);
++    ret = d2d_cached_primitive_locked(context, kind, x, y, width, height, brush, stroke_width, style, fill);
++    if (context->cs)
++        LeaveCriticalSection(context->cs);
++    return ret;
++}
++
+ static void STDMETHODCALLTYPE d2d_device_context_DrawLine(ID2D1DeviceContext6 *iface,
+         D2D1_POINT_2F p0, D2D1_POINT_2F p1, ID2D1Brush *brush, float stroke_width, ID2D1StrokeStyle *stroke_style)
+ {
+@@ -748,6 +870,8 @@
+         d2d_command_list_draw_line(context->target.command_list, context, p0, p1, brush, stroke_width, stroke_style);
+         return;
+     }
++
++    if (d2d_cached_primitive(context, 0, p0.x, p0.y, p1.x - p0.x, p1.y - p0.y, brush, stroke_width, stroke_style, FALSE)) return;
+ 
+     if (FAILED(hr = ID2D1Factory_CreatePathGeometry(context->factory, &geometry)))
+     {
+@@ -792,6 +916,8 @@
+         return;
+     }
+ 
++    if (d2d_cached_primitive(context, 1, rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top, brush, stroke_width, stroke_style, FALSE)) return;
++
+     if (FAILED(hr = ID2D1Factory_CreateRectangleGeometry(context->factory, rect, &geometry)))
+     {
+         ERR("Failed to create geometry, hr %#lx.\n", hr);
+@@ -923,6 +1049,8 @@
+     if (FAILED(render_target->error.code))
+         return;
+ 
++    if (d2d_cached_primitive(render_target, 2, ellipse->point.x, ellipse->point.y, ellipse->radiusX, ellipse->radiusY, brush, stroke_width, stroke_style, FALSE)) return;
++
+     if (FAILED(hr = ID2D1Factory_CreateEllipseGeometry(render_target->factory, ellipse, &geometry)))
+     {
+         ERR("Failed to create geometry, hr %#lx.\n", hr);
+@@ -944,6 +1072,8 @@
+ 
+     if (FAILED(render_target->error.code))
+         return;
++
++    if (d2d_cached_primitive(render_target, 2, ellipse->point.x, ellipse->point.y, ellipse->radiusX, ellipse->radiusY, brush, 0.0f, NULL, TRUE)) return;
+ 
+     if (FAILED(hr = ID2D1Factory_CreateEllipseGeometry(render_target->factory, ellipse, &geometry)))
+     {
+@@ -999,6 +1129,8 @@
+     float tmp_x, tmp_y;
+     HRESULT hr;
+ 
++    d2d_solid_batch_flush(context);
++
+     ID3D11Device1_GetImmediateContext(context->d3d_device, &d3d_context);
+ 
+     if (FAILED(hr = ID3D11DeviceContext_Map(d3d_context, (ID3D11Resource *)context->vs_cb,
+@@ -1037,6 +1169,520 @@
+     ID3D11DeviceContext_Release(d3d_context);
+ 
+     return S_OK;
++}
++
++static const char d2d_batch_vs[] =
++    "float3x2 transform_geometry; float stroke_width; float4 transform_rtx; float4 transform_rty;\n"
++    "struct output { float2 p : WORLD_POSITION; float4 b : BEZIER; nointerpolation float2x2 stroke_transform : STROKE_TRANSFORM; float4 position : SV_POSITION; nointerpolation float4 colour : COLOR0; nointerpolation uint kind : KIND; };\n"
++    "void draw_triangle(float width, float2 position : POSITION, out struct output o)\n"
++    "{\n"
++    "    o.p = mul(float3(position, 1.0f), transform_geometry);\n"
++    "    o.b = float4(1.0, 0.0, 1.0, 1.0);\n"
++    "    o.stroke_transform = float2x2(1.0, 0.0, 0.0, 1.0);\n"
++    "    position = mul(float2x3(transform_rtx.xyz, transform_rty.xyz), float3(o.p, 1.0f))\n"
++    "            * float2(transform_rtx.w, transform_rty.w);\n"
++    "    o.position = float4(position + float2(-1.0f, 1.0f), 0.0f, 1.0f);\n"
++    "}\n"
++    "void draw_curve(float width, float2 position : POSITION, float3 texcoord : TEXCOORD0, out struct output o)\n"
++    "{\n"
++    "    o.p = mul(float3(position, 1.0f), transform_geometry);\n"
++    "    o.b = float4(texcoord, 1.0);\n"
++    "    o.stroke_transform = float2x2(1.0, 0.0, 0.0, 1.0);\n"
++    "    position = mul(float2x3(transform_rtx.xyz, transform_rty.xyz), float3(o.p, 1.0f))\n"
++    "            * float2(transform_rtx.w, transform_rty.w);\n"
++    "    o.position = float4(position + float2(-1.0f, 1.0f), 0.0f, 1.0f);\n"
++    "}\n"
++    "void draw_outline(float width, float3 canvas, float2 position : POSITION, float2 prev : PREV, float2 next : NEXT, out struct output o)\n"
++    "{\n"
++    "    float2 q_prev, q_next, v_p, q_i;\n"
++    "    float2x2 geom;\n"
++    "    float l;\n"
++    "    o.stroke_transform = float2x2(float2(canvas.x, 0.0f), float2(0.0f, canvas.x)) * width * 0.5f;\n"
++    "    geom = float2x2(transform_geometry._11_21, transform_geometry._12_22);\n"
++    "    q_prev = normalize(mul(geom, prev));\n"
++    "    q_next = normalize(mul(geom, next));\n"
++    "    v_p = float2(-q_prev.y, q_prev.x);\n"
++    "    l = -dot(v_p, q_next) / (1.0f + dot(q_prev, q_next));\n"
++    "    q_i = l * q_prev + v_p;\n"
++    "    o.b = float4(0.0, 0.0, 0.0, 0.0);\n"
++    "    o.p = mul(float3(position, 1.0f), transform_geometry) + width * 0.5f * q_i;\n"
++    "    position = mul(float2x3(float3(canvas.x, 0.0f, canvas.y), float3(0.0f, canvas.x, canvas.z)), float3(o.p, 1.0f))\n"
++    "            * float2(transform_rtx.w, transform_rty.w);\n"
++    "    o.position = float4(position + float2(-1.0f, 1.0f), 0.0f, 1.0f);\n"
++    "}\n"
++    "void draw_bezier_outline(float width, float3 canvas, float2 position : POSITION, float2 p0 : P0, float2 p1 : P1, float2 p2 : P2,\n"
++    "        float2 prev : PREV, float2 next : NEXT, out struct output o)\n"
++    "{\n"
++    "    float2 q_prev, q_next, v_p, q_i, p;\n"
++    "    float2x2 geom, rt;\n"
++    "    float l;\n"
++    "    geom = float2x2(transform_geometry._11_21, transform_geometry._12_22);\n"
++    "    rt = float2x2(float2(canvas.x, 0.0f), float2(0.0f, canvas.x));\n"
++    "    o.stroke_transform = rt * width * 0.5f;\n"
++    "    p = mul(geom, position);\n"
++    "    p0 = mul(geom, p0);\n"
++    "    p1 = mul(geom, p1);\n"
++    "    p2 = mul(geom, p2);\n"
++    "    p -= p0;\n"
++    "    p1 -= p0;\n"
++    "    p2 -= p0;\n"
++    "    q_prev = normalize(mul(geom, prev));\n"
++    "    q_next = normalize(mul(geom, next));\n"
++    "    v_p = float2(-q_prev.y, q_prev.x);\n"
++    "    l = -dot(v_p, q_next) / (1.0f + dot(q_prev, q_next));\n"
++    "    q_i = l * q_prev + v_p;\n"
++    "    p += 0.5f * width * q_i;\n"
++    "    v_p = mul(rt, p2);\n"
++    "    v_p = normalize(float2(-v_p.y, v_p.x));\n"
++    "    if (abs(dot(mul(rt, p1), v_p)) < 1.0f)\n"
++    "    {\n"
++    "        o.b.xzw = float3(0.0f, 0.0f, 0.0f);\n"
++    "        o.b.y = dot(mul(rt, p), v_p);\n"
++    "    }\n"
++    "    else\n"
++    "    {\n"
++    "        o.b.zw = sign(dot(mul(rt, p1), v_p)) * v_p;\n"
++    "        v_p = -float2(-p.y, p.x) / dot(float2(-p1.y, p1.x), p2);\n"
++    "        o.b.x = dot(v_p, p1 - 0.5f * p2);\n"
++    "        o.b.y = dot(v_p, p1);\n"
++    "    }\n"
++    "    o.p = mul(float3(position, 1.0f), transform_geometry) + 0.5f * width * q_i;\n"
++    "    position = mul(float2x3(float3(canvas.x, 0.0f, canvas.y), float3(0.0f, canvas.x, canvas.z)), float3(o.p, 1.0f))\n"
++    "            * float2(transform_rtx.w, transform_rty.w);\n"
++    "    o.position = float4(position + float2(-1.0f, 1.0f), 0.0f, 1.0f);\n"
++    "}\n"
++    "void draw_arc_outline(float width, float3 canvas, float2 position : POSITION, float2 p0 : P0, float2 p1 : P1, float2 p2 : P2,\n"
++    "        float2 prev : PREV, float2 next : NEXT, out struct output o)\n"
++    "{\n"
++    "    float2 q_prev, q_next, v_p, q_i, p;\n"
++    "    float2x2 geom, rt, p_inv;\n"
++    "    float l;\n"
++    "    float a;\n"
++    "    float2 bc;\n"
++    "    geom = float2x2(transform_geometry._11_21, transform_geometry._12_22);\n"
++    "    rt = float2x2(float2(canvas.x, 0.0f), float2(0.0f, canvas.x));\n"
++    "    o.stroke_transform = rt * width * 0.5f;\n"
++    "    p = mul(geom, position);\n"
++    "    p0 = mul(geom, p0);\n"
++    "    p1 = mul(geom, p1);\n"
++    "    p2 = mul(geom, p2);\n"
++    "    p -= p0;\n"
++    "    p1 -= p0;\n"
++    "    p2 -= p0;\n"
++    "    q_prev = normalize(mul(geom, prev));\n"
++    "    q_next = normalize(mul(geom, next));\n"
++    "    v_p = float2(-q_prev.y, q_prev.x);\n"
++    "    l = -dot(v_p, q_next) / (1.0f + dot(q_prev, q_next));\n"
++    "    q_i = l * q_prev + v_p;\n"
++    "    p += 0.5f * width * q_i;\n"
++    "    p_inv = float2x2(p1.y, -p1.x, p2.y - p1.y, p1.x - p2.x) / (p1.x * p2.y - p2.x * p1.y);\n"
++    "    o.b.xy = mul(p_inv, p) + float2(1.0f, 0.0f);\n"
++    "    o.b.zw = 0.0f;\n"
++    "    o.p = mul(float3(position, 1.0f), transform_geometry) + 0.5f * width * q_i;\n"
++    "    position = mul(float2x3(float3(canvas.x, 0.0f, canvas.y), float3(0.0f, canvas.x, canvas.z)), float3(o.p, 1.0f))\n"
++    "            * float2(transform_rtx.w, transform_rty.w);\n"
++    "    o.position = float4(position + float2(-1.0f, 1.0f), 0.0f, 1.0f);\n"
++    "}\n"
++    "struct vertex {float2 p:POSITION;float2 p0:P0;float2 p1:P1;float2 p2:P2;float2 prev:PREV;float2 next:NEXT;float4 colour:COLOR0;uint kind:KIND;float width:WIDTH;float3 canvas:CANVAS;};\n"
++    "void main(struct vertex i,out struct output o) {\n"
++    " if(i.kind==0) draw_triangle(i.width,i.p,o);\n"
++    " else if(i.kind<3) draw_curve(i.width,i.p,float3(i.p0,i.p1.x),o);\n"
++    " else if(i.kind==3) draw_outline(i.width,i.canvas,i.p,i.prev,i.next,o);\n"
++    " else if(i.kind==4) draw_bezier_outline(i.width,i.canvas,i.p,i.p0,i.p1,i.p2,i.prev,i.next,o);\n"
++    " else draw_arc_outline(i.width,i.canvas,i.p,i.p0,i.p1,i.p2,i.prev,i.next,o);\n"
++    " o.colour=i.colour;o.kind=i.kind;\n"
++    "}\n"
++    ;
++static const char d2d_batch_ps[] =
++    "struct input { float2 p : WORLD_POSITION; float4 b : BEZIER; nointerpolation float2x2 stroke_transform : STROKE_TRANSFORM; float4 position : SV_POSITION; nointerpolation float4 colour : COLOR0; nointerpolation uint kind : KIND; };\n"
++    "float4 main(struct input i) : SV_Target { float4 colour=i.colour; bool outline=i.kind>=3; bool is_arc=i.kind==2||i.kind==5;\n"
++    "    if (outline)\n"
++    "    {\n"
++    "        float2 du, dv, df;\n"
++    "        float4 uv;\n"
++    "        uv = i.b;\n"
++    "        du = float2(ddx(uv.x), ddy(uv.x));\n"
++    "        dv = float2(ddx(uv.y), ddy(uv.y));\n"
++    "        if (!is_arc)\n"
++    "        {\n"
++    "            df = 2.0f * uv.x * du - dv;\n"
++    "            clip(dot(df, uv.zw));\n"
++    "            clip(length(mul(i.stroke_transform, df)) - abs(uv.x * uv.x - uv.y));\n"
++    "        }\n"
++    "        else\n"
++    "        {\n"
++    "            df = 2.0f * uv.x * du + 2.0f * uv.y * dv;\n"
++    "            clip(dot(df, uv.zw));\n"
++    "            clip(length(mul(i.stroke_transform, df)) - abs(uv.x * uv.x + uv.y * uv.y - 1.0f));\n"
++    "        }\n"
++    "    }\n"
++    "    else\n"
++    "    {\n"
++    "        if (!is_arc)\n"
++    "        {\n"
++    "            clip((i.b.x * i.b.x - i.b.y) * i.b.z);\n"
++    "        }\n"
++    "        else\n"
++    "        {\n"
++    "            clip((i.b.x * i.b.x + i.b.y * i.b.y - 1.0) * i.b.z);\n"
++    "        }\n"
++    "    }\n"
++    "    return colour;\n"
++    "}\n"
++    ;
++
++/* One ordered triangle stream for solid fills and strokes. Per-vertex colour,
++ * width and shape kind avoid changing constants between primitives. Strokes
++ * retain the original extrusion-before-canvas-transform arithmetic. */
++struct d2d_batch_vertex
++{
++    D2D1_POINT_2F position, p0, p1, p2, prev, next;
++    D2D1_COLOR_F color;
++    float canvas[3];
++    UINT kind;
++    float width;
++};
++struct d2d_solid_batch
++{
++    BOOL flushing, ready, failed;
++    D2D1_COLOR_F color;
++    struct d2d_batch_vertex *vertices;
++    UINT count, capacity, gpu_capacity;
++    ID3D11Buffer *buffer;
++    struct d2d_shape_resources shaders;
++    ID3D11PixelShader *ps;
++};
++
++static BOOL d2d_solid_batch_enabled(void)
++{
++    static LONG enabled = -1;
++    char value[8];
++    if (enabled == -1)
++        InterlockedExchange(
++                &enabled, GetEnvironmentVariableA("WINE_D2D_BATCH", value, sizeof(value)) == 1 && value[0] == '1');
++    return enabled;
++}
++
++static BOOL d2d_batch_init(struct d2d_device_context *context, struct d2d_solid_batch *batch)
++{
++    static const D3D11_INPUT_ELEMENT_DESC input[] = {
++#define BATCH_ELEMENT(name, member, format)                                                                            \
++    { name, 0, format, 0, offsetof(struct d2d_batch_vertex, member), D3D11_INPUT_PER_VERTEX_DATA, 0 }
++        BATCH_ELEMENT("POSITION", position, DXGI_FORMAT_R32G32_FLOAT),
++        { "P", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(struct d2d_batch_vertex, p0), D3D11_INPUT_PER_VERTEX_DATA, 0 },
++        { "P", 1, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(struct d2d_batch_vertex, p1), D3D11_INPUT_PER_VERTEX_DATA, 0 },
++        { "P", 2, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(struct d2d_batch_vertex, p2), D3D11_INPUT_PER_VERTEX_DATA, 0 },
++        BATCH_ELEMENT("PREV", prev, DXGI_FORMAT_R32G32_FLOAT), BATCH_ELEMENT("NEXT", next, DXGI_FORMAT_R32G32_FLOAT),
++        BATCH_ELEMENT("COLOR", color, DXGI_FORMAT_R32G32B32A32_FLOAT),
++        BATCH_ELEMENT("KIND", kind, DXGI_FORMAT_R32_UINT), BATCH_ELEMENT("WIDTH", width, DXGI_FORMAT_R32_FLOAT),
++        BATCH_ELEMENT("CANVAS", canvas, DXGI_FORMAT_R32G32B32_FLOAT)
++#undef BATCH_ELEMENT
++    };
++    ID3DBlob *code = NULL, *errors = NULL;
++    HRESULT hr;
++    char value[8];
++    if (batch->ready)
++        return TRUE;
++    if (batch->failed)
++        return FALSE;
++    hr = D3DCompile(
++            d2d_batch_vs, sizeof(d2d_batch_vs) - 1, "d2d_batch_vs", NULL, NULL, "main", "vs_4_0", 0, 0, &code, &errors);
++    if (FAILED(hr))
++        goto failed;
++    if (errors)
++    {
++        ID3D10Blob_Release(errors);
++        errors = NULL;
++    }
++    hr = ID3D11Device1_CreateVertexShader(context->d3d_device, ID3D10Blob_GetBufferPointer(code),
++            ID3D10Blob_GetBufferSize(code), NULL, &batch->shaders.vs);
++    if (SUCCEEDED(hr))
++        hr = ID3D11Device1_CreateInputLayout(context->d3d_device, input, ARRAY_SIZE(input),
++                ID3D10Blob_GetBufferPointer(code), ID3D10Blob_GetBufferSize(code), &batch->shaders.il);
++    ID3D10Blob_Release(code);
++    code = NULL;
++    if (FAILED(hr))
++        goto failed;
++    hr = D3DCompile(
++            d2d_batch_ps, sizeof(d2d_batch_ps) - 1, "d2d_batch_ps", NULL, NULL, "main", "ps_4_0", 0, 0, &code, &errors);
++    if (FAILED(hr))
++        goto failed;
++    hr = ID3D11Device1_CreatePixelShader(
++            context->d3d_device, ID3D10Blob_GetBufferPointer(code), ID3D10Blob_GetBufferSize(code), NULL, &batch->ps);
++    ID3D10Blob_Release(code);
++    code = NULL;
++    if (FAILED(hr))
++        goto failed;
++    if (errors)
++        ID3D10Blob_Release(errors);
++    batch->ready = TRUE;
++    if (GetEnvironmentVariableA("WINE_D2D_BATCH_STATS", value, sizeof(value)) && value[0] == '1')
++        fprintf(stderr, "D2D_BATCH pipeline ready\n");
++    return TRUE;
++failed:
++    WARN("Batch shader initialization failed, hr %#lx.\n", hr);
++    if (errors)
++    {
++        WARN("Batch shader error: %s\n", (char *)ID3D10Blob_GetBufferPointer(errors));
++        ID3D10Blob_Release(errors);
++    }
++    if (code)
++        ID3D10Blob_Release(code);
++    batch->failed = TRUE;
++    return FALSE;
++}
++
++static void d2d_batch_flush_locked(struct d2d_device_context *context)
++{
++    struct d2d_solid_batch *batch = context->solid_batch;
++    D2D1_MATRIX_3X2_F saved_transform;
++    struct d2d_shape_resources saved_shaders;
++    ID3D11PixelShader *saved_ps;
++    ID3D11DeviceContext *d3d_context;
++    D3D11_BUFFER_DESC desc = { 0 };
++    D3D11_MAPPED_SUBRESOURCE map;
++    float dpi_x, dpi_y;
++    HRESULT hr;
++    struct d2d_brush brush = { 0 };
++    if (!batch || batch->flushing || !batch->count)
++        return;
++    batch->flushing = TRUE;
++    ID3D11Device1_GetImmediateContext(context->d3d_device, &d3d_context);
++    if (batch->gpu_capacity < batch->count)
++    {
++        if (batch->buffer)
++            ID3D11Buffer_Release(batch->buffer);
++        batch->buffer = NULL;
++        batch->gpu_capacity = 0;
++        desc.ByteWidth = batch->capacity * sizeof(*batch->vertices);
++        desc.Usage = D3D11_USAGE_DYNAMIC;
++        desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
++        desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
++        hr = ID3D11Device1_CreateBuffer(context->d3d_device, &desc, NULL, &batch->buffer);
++        if (FAILED(hr))
++            goto done;
++        batch->gpu_capacity = batch->capacity;
++    }
++    hr = ID3D11DeviceContext_Map(d3d_context, (ID3D11Resource *)batch->buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &map);
++    if (FAILED(hr))
++        goto done;
++    memcpy(map.pData, batch->vertices, batch->count * sizeof(*batch->vertices));
++    ID3D11DeviceContext_Unmap(d3d_context, (ID3D11Resource *)batch->buffer, 0);
++    saved_transform = context->drawing_state.transform;
++    dpi_x = context->desc.dpiX;
++    dpi_y = context->desc.dpiY;
++    context->drawing_state.transform = identity;
++    context->desc.dpiX = context->desc.dpiY = 96.0f;
++    hr = d2d_device_context_update_vs_cb(context, &identity, 0.0f);
++    if (SUCCEEDED(hr))
++    {
++        saved_shaders = context->shape_resources[D2D_SHAPE_TYPE_TRIANGLE];
++        saved_ps = context->ps;
++        context->shape_resources[D2D_SHAPE_TYPE_TRIANGLE] = batch->shaders;
++        context->ps = batch->ps;
++        brush.type = D2D_BRUSH_TYPE_SOLID;
++        d2d_device_context_draw(context, D2D_SHAPE_TYPE_TRIANGLE, NULL, batch->count, batch->buffer,
++                sizeof(*batch->vertices), &brush, NULL);
++        context->shape_resources[D2D_SHAPE_TYPE_TRIANGLE] = saved_shaders;
++        context->ps = saved_ps;
++    }
++    context->drawing_state.transform = saved_transform;
++    context->desc.dpiX = dpi_x;
++    context->desc.dpiY = dpi_y;
++done:
++    if (FAILED(hr))
++        d2d_device_context_set_error(context, hr);
++    ID3D11DeviceContext_Release(d3d_context);
++    batch->count = 0;
++    batch->flushing = FALSE;
++}
++
++static void d2d_solid_batch_flush(struct d2d_device_context *context)
++{
++    if (context->cs)
++        EnterCriticalSection(context->cs);
++    d2d_batch_flush_locked(context);
++    if (context->cs)
++        LeaveCriticalSection(context->cs);
++}
++
++static void d2d_solid_batch_free(struct d2d_device_context *context)
++{
++    struct d2d_solid_batch *batch = context->solid_batch;
++    if (!batch)
++        return;
++    d2d_solid_batch_flush(context);
++    free(batch->vertices);
++    if (batch->buffer)
++        ID3D11Buffer_Release(batch->buffer);
++    if (batch->ps)
++        ID3D11PixelShader_Release(batch->ps);
++    if (batch->shaders.vs)
++        ID3D11VertexShader_Release(batch->shaders.vs);
++    if (batch->shaders.il)
++        ID3D11InputLayout_Release(batch->shaders.il);
++    free(batch);
++}
++
++static D2D1_POINT_2F d2d_solid_batch_position(
++        struct d2d_device_context *context, const D2D1_MATRIX_3X2_F *g, D2D1_POINT_2F p)
++{
++    const D2D1_MATRIX_3X2_F *w = &context->drawing_state.transform;
++    D2D1_POINT_2F q = { p.x * g->_11 + p.y * g->_21 + g->_31, p.x * g->_12 + p.y * g->_22 + g->_32 };
++    p.x = (q.x * w->_11 + q.y * w->_21 + w->_31) * (context->desc.dpiX / 96.0f);
++    p.y = (q.x * w->_12 + q.y * w->_22 + w->_32) * (context->desc.dpiY / 96.0f);
++    return p;
++}
++
++static struct d2d_solid_batch *d2d_batch_reserve(
++        struct d2d_device_context *context, struct d2d_brush *brush, UINT count)
++{
++    struct d2d_solid_batch *batch;
++    struct d2d_batch_vertex *vertices;
++    UINT capacity;
++    if (!d2d_solid_batch_enabled() || !brush || brush->type != D2D_BRUSH_TYPE_SOLID
++            || context->target.type != D2D_TARGET_BITMAP || count > 65536 || !isfinite(brush->opacity)
++            || !isfinite(brush->u.solid.color.a)
++            || (context->drawing_state.primitiveBlend != D2D1_PRIMITIVE_BLEND_SOURCE_OVER
++                    && context->drawing_state.primitiveBlend != D2D1_PRIMITIVE_BLEND_COPY))
++        return NULL;
++    if (!(batch = context->solid_batch))
++        if (!(batch = context->solid_batch = calloc(1, sizeof(*batch))))
++            return NULL;
++    if (!d2d_batch_init(context, batch))
++        return NULL;
++    batch->color = brush->u.solid.color;
++    {
++        float opacity = max(0.0f, min(brush->opacity, 1.0f));
++        batch->color.r *= batch->color.a;
++        batch->color.g *= batch->color.a;
++        batch->color.b *= batch->color.a;
++        batch->color.r *= opacity;
++        batch->color.g *= opacity;
++        batch->color.b *= opacity;
++        batch->color.a *= opacity;
++    }
++    if (batch->count + count > 65536)
++        d2d_solid_batch_flush(context);
++    capacity = batch->capacity;
++    if (capacity >= batch->count + count)
++        return batch;
++    if (!capacity)
++        capacity = 512;
++    while (capacity < batch->count + count)
++        capacity *= 2;
++    if (!(vertices = realloc(batch->vertices, capacity * sizeof(*vertices))))
++        return NULL;
++    memset(vertices + batch->capacity, 0, (capacity - batch->capacity) * sizeof(*vertices));
++    batch->vertices = vertices;
++    batch->capacity = capacity;
++    return batch;
++}
++static struct d2d_batch_vertex *d2d_batch_vertex(struct d2d_solid_batch *batch, UINT kind)
++{
++    struct d2d_batch_vertex *v = &batch->vertices[batch->count++];
++    v->kind = kind;
++    v->color = batch->color;
++    v->width = 0.0f;
++    return v;
++}
++static BOOL d2d_batch_add_fill_locked(struct d2d_device_context *context, const struct d2d_geometry *geometry,
++        const D2D1_MATRIX_3X2_F *transform, struct d2d_brush *brush, struct d2d_brush *opacity)
++{
++    struct d2d_solid_batch *batch;
++    unsigned int count, i, j, k;
++    if (opacity || geometry->fill.face_count > 65536 / 3 || geometry->fill.bezier_vertex_count > 65536
++            || geometry->fill.arc_vertex_count > 65536)
++        return FALSE;
++    count = geometry->fill.face_count * 3 + geometry->fill.bezier_vertex_count + geometry->fill.arc_vertex_count;
++    if (!(batch = d2d_batch_reserve(context, brush, count)))
++        return FALSE;
++    for (i = 0; i < geometry->fill.face_count; ++i)
++        for (j = 0; j < 3; ++j)
++        {
++            struct d2d_batch_vertex *v = d2d_batch_vertex(batch, 0);
++            v->position = d2d_solid_batch_position(
++                    context, transform, geometry->fill.vertices[geometry->fill.faces[i].v[j]]);
++        }
++    for (k = 0; k < 2; ++k)
++        for (i = 0; i < (k ? geometry->fill.arc_vertex_count : geometry->fill.bezier_vertex_count); ++i)
++        {
++            const struct d2d_curve_vertex *source
++                    = k ? &geometry->fill.arc_vertices[i] : &geometry->fill.bezier_vertices[i];
++            struct d2d_batch_vertex *v = d2d_batch_vertex(batch, k + 1);
++            v->position = d2d_solid_batch_position(context, transform, source->position);
++            v->p0.x = source->texcoord.u;
++            v->p0.y = source->texcoord.v;
++            v->p1.x = source->texcoord.sign;
++        }
++    return TRUE;
++}
++static BOOL d2d_batch_add_outline_locked(
++        struct d2d_device_context *context, const struct d2d_geometry *geometry, struct d2d_brush *brush, float width)
++{
++    const D2D1_MATRIX_3X2_F *w = &context->drawing_state.transform, *g = &geometry->transform;
++    struct d2d_solid_batch *batch;
++    unsigned int count, i, j, k;
++    float scale, tx, ty;
++    if (g->_11 != 1.0f || g->_22 != 1.0f || g->_12 != 0.0f || g->_21 != 0.0f || g->_31 != 0.0f || g->_32 != 0.0f
++            || w->_12 != 0.0f || w->_21 != 0.0f || w->_11 != w->_22 || w->_11 <= 0.0f
++            || context->desc.dpiX != context->desc.dpiY || !isfinite(width) || !isfinite(w->_11)
++            || geometry->outline.face_count > 65536 / 3 || geometry->outline.bezier_face_count > 65536 / 3
++            || geometry->outline.arc_face_count > 65536 / 3)
++        return FALSE;
++    count = (geometry->outline.face_count + geometry->outline.bezier_face_count + geometry->outline.arc_face_count) * 3;
++    if (!(batch = d2d_batch_reserve(context, brush, count)))
++        return FALSE;
++    scale = w->_11 * (context->desc.dpiX / 96.0f);
++    tx = w->_31 * (context->desc.dpiX / 96.0f);
++    ty = w->_32 * (context->desc.dpiY / 96.0f);
++    for (i = 0; i < geometry->outline.face_count; ++i)
++        for (j = 0; j < 3; ++j)
++        {
++            const struct d2d_outline_vertex *source = &geometry->outline.vertices[geometry->outline.faces[i].v[j]];
++            struct d2d_batch_vertex *v = d2d_batch_vertex(batch, 3);
++            v->position = source->position;
++            v->prev = source->prev;
++            v->next = source->next;
++            v->width = width;
++            v->canvas[0] = scale;
++            v->canvas[1] = tx;
++            v->canvas[2] = ty;
++        }
++    for (k = 0; k < 2; ++k)
++        for (i = 0; i < (k ? geometry->outline.arc_face_count : geometry->outline.bezier_face_count); ++i)
++            for (j = 0; j < 3; ++j)
++            {
++                const struct d2d_face *faces = k ? geometry->outline.arc_faces : geometry->outline.bezier_faces;
++                const struct d2d_curve_outline_vertex *vertices
++                        = k ? geometry->outline.arcs : geometry->outline.beziers;
++                const struct d2d_curve_outline_vertex *source = &vertices[faces[i].v[j]];
++                struct d2d_batch_vertex *v = d2d_batch_vertex(batch, k + 4);
++                v->position = source->position;
++                v->p0 = source->p0;
++                v->p1 = source->p1;
++                v->p2 = source->p2;
++                v->prev = source->prev;
++                v->next = source->next;
++                v->width = width;
++                v->canvas[0] = scale;
++                v->canvas[1] = tx;
++                v->canvas[2] = ty;
++            }
++    return TRUE;
++}
++
++static BOOL d2d_batch_add_geometry(struct d2d_device_context *context, const struct d2d_geometry *geometry,
++        const D2D1_MATRIX_3X2_F *transform, struct d2d_brush *brush, struct d2d_brush *opacity, float width)
++{
++    BOOL ret;
++    if (context->cs)
++        EnterCriticalSection(context->cs);
++    ret = transform ? d2d_batch_add_fill_locked(context, geometry, transform, brush, opacity)
++                    : d2d_batch_add_outline_locked(context, geometry, brush, width);
++    if (context->cs)
++        LeaveCriticalSection(context->cs);
++    return ret;
+ }
+ 
+ /* Altium-on-Wine kit: return a buffer (with a reference the caller releases) holding
+@@ -1106,6 +1752,8 @@
+ {
+     ID3D11Buffer *ib, *vb;
+     HRESULT hr;
++
++    if (d2d_batch_add_geometry(render_target, geometry, NULL, brush, NULL, stroke_width)) return;
+ 
+     if (FAILED(hr = d2d_device_context_update_vs_cb(render_target, &geometry->transform, stroke_width)))
+     {
+@@ -1242,6 +1890,8 @@
+     ID3D11Buffer *ib, *vb;
+     HRESULT hr;
+ 
++    if (d2d_batch_add_geometry(render_target, geometry, transform, brush, opacity_brush, 0.0f)) return;
++
+     if (FAILED(hr = d2d_device_context_update_vs_cb(render_target, transform, 0.0f)))
+     {
+         WARN("Failed to update vs constant buffer, hr %#lx.\n", hr);
+@@ -2270,6 +2920,8 @@
+ 
+     FIXME("iface %p, tag1 %p, tag2 %p stub!\n", iface, tag1, tag2);
+ 
++    d2d_solid_batch_flush(context);
++
+     d2d_device_context_restore_app_state(context);
+ 
+     if (context->ops && context->ops->device_context_present)
+@@ -2335,6 +2987,8 @@
+     D2D1_POINT_2F point;
+ 
+     TRACE("iface %p, clip_rect %s, antialias_mode %#x.\n", iface, debug_d2d_rect_f(clip_rect), antialias_mode);
++
++    d2d_solid_batch_flush(context);
+ 
+     if (context->target.type == D2D_TARGET_COMMAND_LIST)
+         d2d_command_list_push_clip(context->target.command_list, clip_rect, antialias_mode);
+@@ -2367,6 +3021,8 @@
+ 
+     TRACE("iface %p.\n", iface);
+ 
++    d2d_solid_batch_flush(context);
++
+     if (context->target.type == D2D_TARGET_COMMAND_LIST)
+         d2d_command_list_pop_clip(context->target.command_list);
+ 
+@@ -2384,6 +3040,8 @@
+     HRESULT hr;
+ 
+     TRACE("iface %p, colour %p.\n", iface, colour);
++
++    d2d_solid_batch_flush(context);
+ 
+     if (FAILED(context->error.code))
+         return;
+@@ -2479,6 +3137,8 @@
+ 
+     TRACE("iface %p, tag1 %p, tag2 %p.\n", iface, tag1, tag2);
+ 
++    d2d_solid_batch_flush(context);
++
+     if (context->target.type == D2D_TARGET_COMMAND_LIST)
+     {
+         FIXME("Unimplemented for command list target.\n");
+@@ -2978,6 +3638,8 @@
+     HRESULT hr;
+ 
+     TRACE("iface %p, target %p.\n", iface, target);
++
++    d2d_solid_batch_flush(context);
+ 
+     d2d_device_context_restore_app_state(context);
+ 
+@@ -4103,6 +4765,8 @@
+ 
+     if (render_target->target.hdc)
+         return D2DERR_WRONG_STATE;
++
++    d2d_solid_batch_flush(render_target);
+ 
+     d2d_device_context_restore_app_state(render_target);
+ 
+--- a/dlls/d2d1/d2d1_private.h
++++ b/dlls/d2d1/d2d1_private.h
+@@ -199,6 +199,9 @@
+     } target;
+     struct d2d_shape_resources shape_resources[D2D_SHAPE_TYPE_COUNT];
+     ID3D11Buffer *vs_cb;
++    struct d2d_solid_batch *solid_batch;
++    struct { D2D1_POINT_2F size; ID2D1Geometry *geometry; unsigned kind; } primitive_cache[1024];
++    BYTE primitive_next[256];
+     ID2D1RectangleGeometry *unit_rect; /* Altium-on-Wine kit: reused by FillRectangle */
+     ID3DDeviceContextState *app_state; /* Altium-on-Wine kit: app state saved while ours is bound */
+     BOOL d2d_state_active;

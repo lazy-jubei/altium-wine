@@ -64,3 +64,10 @@ AD17_NATIVE_GDI_WORKERS="${AD17_NATIVE_GDI_WORKERS:-2}"
 
 # Match AD26's UI backing color space without changing its GPU canvas.
 AD26_SRGB_WINDOWS="${AD26_SRGB_WINDOWS:-1}"
+
+# Reuse primitive geometry and batch solid Direct2D draws in source order.
+AD26_D2D_PRIMITIVE_CACHE="${AD26_D2D_PRIMITIVE_CACHE:-1}"
+AD26_D2D_BATCH="${AD26_D2D_BATCH:-1}"
+
+# Optional rebuilt D3D11 renderer; see tools/build-ad26-dxvk.sh.
+AD26_DXVK_DIR="${AD26_DXVK_DIR:-}"

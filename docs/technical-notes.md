@@ -476,8 +476,9 @@ The normal AD26 launcher now enables this with `AD26_SRGB_WINDOWS=1`.
 
 On the public FPGA sheet, a 2560-point-wide Retina window measured **21.33 fps
 off / 43.61 fps on**, counting complete changed CAD frames. A 1920×1080-point
-Retina viewport measured **58.44–59.94 fps** in repeated runs. Full-size 60 fps is still
-not reached; the default keeps Retina enabled and does not resize the window.
+Retina viewport measured **58.44–59.94 fps** in repeated runs. That trial did
+not reach full-size 60 fps; see the October 24 update below. Retina stays enabled
+and the launcher does not resize the window.
 The comparison uses 120-Hz capture/input, a 20-second horizontal pan, and an
 18-second steady interval. The wider capture region stays populated throughout
 the pan; earlier small-region measurements undercounted when it became blank.
@@ -494,3 +495,54 @@ frames at the smaller viewport; sampled canvas corners show no seams or invented
 edge pixels. The final window was restored to full size. Component-property
 inspection, input release and responsiveness were checked without saving any
 changes to the public project.
+
+### AD26 ordered drawing (October 24, 2026)
+
+Patch `0037` batches solid Direct2D fills, text outlines and strokes in their
+original order, with a bounded cache of reusable line/rectangle/ellipse geometry.
+It flushes at clip, target, GDI, Clear, Flush and EndDraw boundaries and uses
+the original path for unsupported brushes and stroke transforms. Strokes retain
+the original extrusion and transform arithmetic to avoid edge-coverage changes.
+
+The normal AD26 launcher enables `AD26_D2D_BATCH=1` and
+`AD26_D2D_PRIMITIVE_CACHE=1`. Set either to `0` in `config.local.sh` to disable
+it. Build current sources for these changes; release v1.1.3 predates this patch.
+The [GPU diagnostics](../diagnostics/README.md#ad26-direct2d-batching) compare
+16 cases and all four feature combinations with both factory types: all
+4,194,304 output bytes match.
+
+A dense controller schematic measured **20.5–21.9 redraws/s off** and
+**40.6–43.9 on** in matched warm trials at a 2560-point-wide Retina window.
+Cooler enabled runs reached **59.1–61.0 fps**; a closer editing view measured
+46.8 fps. This is not a consistent 60 fps across zoom levels and system load.
+The test uses a 20-second horizontal pan, an 18-second measured interval and
+changed CAD content away from the cursor. Keep capture logs local: network-share
+stalls and a slower Windows input helper distorted earlier measurements.
+The native gesture diagnostic now supplies AD26's mouse deltas and button metadata.
+
+For 3D, setting **View Configuration → View Options → 3D Settings → Core
+transparency** to zero improved same-session rotation from **9.3 to 12.6–12.9 fps**
+on this 16-layer board while retaining component models. Release/reposition
+testing captured no black frames. This is a view preference, not a geometry change.
+A newer MoltenVK driver and forcing Rosetta JIT did not establish a useful
+improvement and are not enabled for AD26. Parallel GDI copying and extending
+the cache to diagonal lines also gave no reliable live improvement and were left out.
+
+The optional D3D11 source patch fixes GDI dirty-rectangle uploads that started
+from the wrong source row, and checks failed readback maps. The owned pixel
+probe fails three partial updates with the shipped renderer and passes all four
+checks with the rebuilt one. It does not by itself establish a 3D speed gain.
+
+```sh
+bash tools/build-ad26-dxvk.sh
+```
+
+Requires LLVM-MinGW, Meson, Ninja and glslangValidator. To use its output,
+close AD26 and add to `config.local.sh`:
+
+```sh
+AD26_DXVK_DIR="$HOME/AltiumWine/build/ad26-dxvk/output"
+```
+
+The launcher refuses to replace an open renderer and converts local document
+paths to Windows paths before passing them to Altium.
