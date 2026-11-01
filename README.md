@@ -1,5 +1,7 @@
 # Altium Designer on macOS with Wine
 
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=lazy-jubei_altium-wine&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=lazy-jubei_altium-wine)
+
 Run Altium Designer on Apple Silicon Macs with patched Wine. Tested with Altium Designer 17.1 and 26.10.1 on an M4 Mac running macOS 15.7.9.
 
 Altium 365 works, including project cloning.
