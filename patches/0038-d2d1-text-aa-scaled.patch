@@ -1,0 +1,62 @@
+From: Altium-on-Wine kit
+Subject: d2d1: pick the text rendering mode for the on-screen size (opt-in)
+
+Modules: dlls/d2d1
+Base: wine-11.16 with kit patches 0003 and 0037
+
+Native Direct2D chooses between antialiased glyph bitmaps and outlines from the size text
+has on screen. Wine passes only the DPI to GetRecommendedRenderingMode and ignores the
+world transform. Altium's schematic editor draws text in large world units and scales it
+down, so every glyph run became an outline; this implementation fills outlines without
+antialiasing, which left small schematic text jagged (and lost thin strokes such as
+underscores). With WINE_D2D_TEXT_AA=1 the transform's scale is included, so small text
+takes the grayscale/ClearType bitmap path. The kit sets it on standard (1x) displays;
+on Retina displays the 2x drawing already smooths text, and nothing changes there.
+
+--- a/dlls/d2d1/device.c	2026-11-08 21:45:00
++++ b/dlls/d2d1/device.c	2026-11-08 21:45:11
+@@ -2643,6 +2643,18 @@
+     IDWriteGlyphRunAnalysis_Release(analysis);
+ }
+ 
++static BOOL d2d_text_aa_enabled(void)
++{
++    static int enabled = -1;
++
++    if (enabled < 0)
++    {
++        const char *env = getenv("WINE_D2D_TEXT_AA");
++        enabled = env && *env && *env != '0';
++    }
++    return enabled;
++}
++
+ static HRESULT d2d_device_context_get_text_rendering_mode(struct d2d_device_context *context,
+         const DWRITE_GLYPH_RUN *glyph_run, DWRITE_MEASURING_MODE measuring_mode,
+         DWRITE_TEXT_ANTIALIAS_MODE *antialias_mode, DWRITE_RENDERING_MODE *rendering_mode)
+@@ -2707,9 +2719,23 @@
+ 
+     if (*rendering_mode == DWRITE_RENDERING_MODE_DEFAULT)
+     {
++        float pixels_per_dip = max(context->desc.dpiX, context->desc.dpiY) / 96.0f;
++
++        /* Native picks the mode for the size the text has on screen. Applications that draw
++         * in large world units and scale down (Altium's schematic editor) otherwise always get
++         * outlines, which this implementation fills without antialiasing. Opt-in:
++         * WINE_D2D_TEXT_AA=1. */
++        if (d2d_text_aa_enabled())
++        {
++            const D2D1_MATRIX_3X2_F *t = &context->drawing_state.transform;
++            float scale = sqrtf(fabsf(t->_11 * t->_22 - t->_12 * t->_21));
++
++            if (scale > 0.0f && isfinite(scale))
++                pixels_per_dip *= scale;
++        }
++
+         if (FAILED(hr = IDWriteFontFace_GetRecommendedRenderingMode(glyph_run->fontFace, glyph_run->fontEmSize,
+-                max(context->desc.dpiX, context->desc.dpiY) / 96.0f,
+-                measuring_mode, rendering_params, rendering_mode)))
++                pixels_per_dip, measuring_mode, rendering_params, rendering_mode)))
+         {
+             ERR("Failed to get recommended rendering mode, hr %#lx.\n", hr);
+             *rendering_mode = DWRITE_RENDERING_MODE_OUTLINE;
