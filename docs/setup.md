@@ -5,7 +5,7 @@
 Nothing is installed system-wide. Wine, the prefix and the downloads all live in `~/AltiumWine`, so deleting that folder undoes everything (or use `install.sh --uninstall`). The exceptions:
 
 - Rosetta 2 if it's missing (asked first).
-- If Homebrew is present, `cabextract` for the fonts and `bison` when building Wine (installed without asking).
+- MacPorts, if it isn't installed, then `cabextract` for the fonts and `bison` when building Wine. Installing them needs an administrator password (or passwordless sudo).
 - The launcher app in `~/Applications`.
 
 ## Install
@@ -17,7 +17,7 @@ curl -fL https://github.com/lazy-jubei/altium-wine/releases/download/v1.0.0/inst
 bash install.sh
 ```
 
-For a specific offline setup folder or ZIP, use `bash install.sh --altium-installer /path/to/offline-setup`. The release includes prebuilt patched Wine modules, so Xcode and Homebrew are not required for the default install.
+For a specific offline setup folder or ZIP, use `bash install.sh --altium-installer /path/to/offline-setup`. The release includes prebuilt patched Wine modules, so Xcode is not required for the default install.
 
 The installer sets up Wine and fonts, runs your Altium installer, and creates `~/Applications/Altium Designer (Wine).app`. Downloads are checksum-verified. Get the Altium offline installer from your Altium account.
 
@@ -46,7 +46,7 @@ The launcher app can't read a kit inside `~/Downloads`, `~/Desktop` or `~/Docume
 The first run:
 
 1. Downloads the WineHQ macOS build (Gcenx wine-staging 11.16, about 185 MB, checksum-verified).
-2. Builds the patched Wine (`build-patched-wine.sh`, about 15 min the first time). It needs the Xcode Command Line Tools and Homebrew, unless `PATCHED_MODULES_DIR` points at prebuilt modules.
+2. Builds the patched Wine (`build-patched-wine.sh`, about 15 min the first time). It needs the Xcode Command Line Tools and MacPorts (for bison), unless `PATCHED_MODULES_DIR` points at prebuilt modules.
 3. Creates the prefix, installs core fonts and starts `Installer.Exe`.
 
 DXVK-macOS (about 4 MB, checksum-verified) is downloaded the first time you `run`.

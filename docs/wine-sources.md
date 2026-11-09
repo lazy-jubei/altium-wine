@@ -50,7 +50,7 @@ bundle by two Python patchers in `patches/`. The server is compiled from source.
 distributed in this repository's module archive.
 
 To build the kit's replacements on an Apple Silicon Mac with Rosetta 2,
-Xcode Command Line Tools and Homebrew:
+Xcode Command Line Tools and MacPorts (bison comes from it):
 
 ```bash
 bash altium-wine.sh setup
