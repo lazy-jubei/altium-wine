@@ -71,3 +71,8 @@ AD26_D2D_BATCH="${AD26_D2D_BATCH:-1}"
 
 # Optional rebuilt D3D11 renderer; see tools/build-ad26-dxvk.sh.
 AD26_DXVK_DIR="${AD26_DXVK_DIR:-}"
+
+# Retina mode (Wine draws at 2x, Windows UI at 200%): "auto" turns it on only when the main
+# display is Retina; on a standard display it blurs text and breaks partial redraws.
+# Set "y" or "n" to force it. Checked each time Altium starts.
+RETINA_MODE="auto"

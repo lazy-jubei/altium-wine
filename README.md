@@ -25,7 +25,11 @@ To choose your offline setup folder or ZIP:
 bash install.sh --altium-installer /path/to/offline-setup
 ```
 
-The installer sets up Wine and fonts and creates `~/Applications/Altium Designer (Wine).app`. It uses prebuilt Wine modules, so Xcode and Homebrew aren't required. Rosetta 2 is required.
+A setup window opens and walks you through it. You only need to do two things: choose the Altium offline installer, then sign in inside the Altium installer when it opens. Everything else runs on its own. The window has a Terminal pane with the details. It's built on your Mac from `tools/AltiumInstaller.swift` with Apple's Command Line Tools, so there's no downloaded app to approve. Without the Command Line Tools, or with `--terminal`, the installer asks in Terminal instead.
+
+The installer sets up Wine and fonts and creates `~/Applications/Altium Designer (Wine).app`. It uses prebuilt Wine modules, so Xcode isn't required. The fonts need `cabextract`, which comes from MacPorts; setup installs MacPorts from its notarized package if it isn't there (one administrator password). Rosetta 2 is required.
+
+Altium's Windows drive lives in its own case-insensitive disk image, `~/AltiumWine/altium-wine.sparsebundle` (mounted at `~/AltiumWine/volume`), so it works the same on any Mac drive. The image only takes the space it uses, up to 200 GB. An install from before the image keeps its prefix in `~/AltiumWine/prefix`.
 
 Optimizations include:
 
@@ -57,7 +61,7 @@ Wine and Altium live in `~/AltiumWine`. Re-run `install.sh` to update.
 
 ## Build
 
-Requires Rosetta 2, Xcode Command Line Tools and Homebrew. Allow about 3 GB of disk space and 15 minutes for the first build.
+Requires Rosetta 2, Xcode Command Line Tools and MacPorts (installed for you if missing). Allow about 3 GB of disk space and 15 minutes for the first build.
 
 ```bash
 git clone https://github.com/lazy-jubei/altium-wine.git

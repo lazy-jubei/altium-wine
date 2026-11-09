@@ -35,6 +35,8 @@ PINNED_WINE_VERSION="11.16"
 WINDOWS_VERSION="win10"
 WINETRICKS_VERBS="corefonts"
 EXTRA_DLLOVERRIDES=""
+IMAGE_SIZE="200g"
+RETINA_MODE="auto"
 WINEDEBUG_INSTALL="+timestamp,+pid,+tid,+seh,+loaddll,+process"
 WINEDEBUG_RUN="+timestamp,+pid,+tid,+seh,+loaddll"
 USE_PATCHED_WINE=0
@@ -44,7 +46,16 @@ DWM_COMPOSITION_OFF=0
 # Machine-specific settings (written by install.sh, kept across kit updates).
 [ -f "$KIT_DIR/config.local.sh" ] && . "$KIT_DIR/config.local.sh"
 
-PREFIX="$WORK_ROOT/prefix"
+# The prefix lives in its own case-insensitive disk image (like a Windows drive), so Altium
+# behaves the same whatever the Mac's drive is formatted as. The sparse image only takes
+# the space it uses. An install from before the image keeps its prefix where it is.
+IMAGE="$WORK_ROOT/altium-wine.sparsebundle"
+VOLUME="$WORK_ROOT/volume"
+if [ -d "$WORK_ROOT/prefix/drive_c" ] && [ ! -d "$IMAGE" ]; then
+    PREFIX="$WORK_ROOT/prefix"
+else
+    PREFIX="$VOLUME/prefix"
+fi
 WINE_ROOT="$WORK_ROOT/wine"
 PATCHED_ROOT="$WORK_ROOT/wine-patched"
 DL_DIR="$WORK_ROOT/downloads"
@@ -70,15 +81,22 @@ ask_yes() {  # ask_yes "question" -> 0 if user typed y/yes
     case "$reply" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
 }
 
-sha256_of() { shasum -a 256 "$1" | awk '{print $1}'; }
+volume_mounted() { mount | grep -qF " on $VOLUME ("; }
 
-find_brew() {
-    local b
-    for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
-        [ -x "$b" ] && { echo "$b"; return 0; }
-    done
-    command -v brew 2>/dev/null
+ensure_volume() {  # create (first run) and mount the disk image that holds the prefix
+    [ "$PREFIX" = "$VOLUME/prefix" ] || return 0
+    volume_mounted && return 0
+    if [ ! -d "$IMAGE" ]; then
+        say "Creating the Altium disk image (case-insensitive; grows as needed, up to $IMAGE_SIZE)"
+        hdiutil create -quiet -size "$IMAGE_SIZE" -type SPARSEBUNDLE -fs HFS+ -volname AltiumWine "$IMAGE" \
+            || die "Couldn't create the disk image $IMAGE"
+    fi
+    mkdir -p "$VOLUME"
+    hdiutil attach -quiet "$IMAGE" -mountpoint "$VOLUME" -nobrowse -noverify -noautofsck -owners on \
+        || die "Couldn't mount the disk image $IMAGE"
 }
+
+sha256_of() { shasum -a 256 "$1" | awk '{print $1}'; }
 
 # ---- platform checks -------------------------------------------------------
 check_platform() {
@@ -258,6 +276,7 @@ apply_registry() {  # imports base reg + optional wine-kit/extra.reg
         cp "$KIT_DIR/extra.reg" "$PREFIX/drive_c/altium-kit-extra.reg"
         "$WINE" regedit /S 'C:\altium-kit-extra.reg' >> "$log" 2>&1
         say "Imported extra.reg"
+        rm -f "$PREFIX/.altium-kit-display"  # extra.reg sets Retina mode; match the display again
     fi
 }
 
@@ -280,6 +299,29 @@ ensure_dxvk() {
     mkdir -p "$DL_DIR/dxvk-macos"
     tar -xzf "$tarball" -C "$DL_DIR/dxvk-macos" || die "DXVK extract failed."
     [ -f "$DXVK_DIR/d3d11.dll" ] || die "DXVK archive layout changed: no $DXVK_DIR/d3d11.dll"
+}
+
+display_scale() {  # the main display's backing scale factor (1 = standard, 2 = Retina)
+    osascript -l JavaScript -e 'ObjC.import("AppKit"); $.NSScreen.mainScreen.backingScaleFactor' 2>/dev/null
+}
+
+apply_display_scale() {  # Retina mode (2x drawing, 192 DPI) only on a Retina display
+    local want="$RETINA_MODE" dpi
+    if [ "$want" = auto ]; then
+        case "$(display_scale)" in
+            1|1.0) want=n ;;
+            2|2.0|3|3.0) want=y ;;
+            *) return 0 ;;  # unknown: keep extra.reg's setting
+        esac
+    fi
+    case "$want" in y) dpi=192 ;; n) dpi=96 ;; *) return 0 ;; esac
+    [ "$(cat "$PREFIX/.altium-kit-display" 2>/dev/null)" = "$want" ] && return 0
+    # On a standard display, Retina mode draws everything at 2x and scales it down: blurry
+    # text, and partial redraws land in the wrong place (broken grid lines).
+    WINEPREFIX="$PREFIX" "$WINE" reg add 'HKCU\Software\Wine\Mac Driver' /v RetinaMode /d "$want" /f >/dev/null 2>&1 \
+        && WINEPREFIX="$PREFIX" "$WINE" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$dpi" /f >/dev/null 2>&1 \
+        && echo "$want" > "$PREFIX/.altium-kit-display" \
+        && say "Display: Retina mode $want ($dpi DPI)"
 }
 
 install_dxvk() {  # copy d3d11/d3d10core next to X2.EXE (extra.reg limits the native override to X2.EXE)
@@ -360,18 +402,15 @@ ensure_winetricks() {
     fi
 }
 
-ensure_cabextract() {
+ensure_cabextract() {  # winetricks needs cabextract; it comes from MacPorts
+    export PATH="/opt/local/bin:$PATH"
     command -v cabextract >/dev/null 2>&1 && return 0
-    local brew
-    brew="$(find_brew)"
-    if [ -n "$brew" ]; then
-        say "Installing cabextract with Homebrew (winetricks needs it)"
-        "$brew" install cabextract >> "$LOG_DIR/$TS-brew.log" 2>&1 || return 1
-        export PATH="$(dirname "$brew"):$PATH"
-        command -v cabextract >/dev/null 2>&1
-        return $?
-    fi
-    return 1
+    # shellcheck source=tools/macports.sh
+    . "$KIT_DIR/tools/macports.sh"
+    say "Installing cabextract with MacPorts (winetricks needs it)"
+    macports_install cabextract >> "$LOG_DIR/$TS-macports.log" 2>&1 \
+        || { warn "MacPorts couldn't install cabextract; see $LOG_DIR/$TS-macports.log"; return 1; }
+    command -v cabextract >/dev/null 2>&1
 }
 
 cmd_deps() {
@@ -384,8 +423,8 @@ cmd_deps() {
     fi
     ensure_winetricks
     if ! ensure_cabextract; then
-        warn "cabextract not found and Homebrew isn't installed; skipping winetricks ($verbs)."
-        warn "Install Homebrew (https://brew.sh) then: brew install cabextract"
+        warn "cabextract isn't available; skipping winetricks ($verbs)."
+        warn "Run setup again to retry installing it with MacPorts (https://www.macports.org)."
         return 0
     fi
     wine_env "err+all"
@@ -491,9 +530,17 @@ snapshot_state() {
 }
 
 INTERRUPTED=0
+windows_process_running() {  # windows_process_running EXE: a Windows program of that name is running
+    local name
+    name="$(printf '%s' "$1" | sed 's/[.[\*^$]/\\&/g')"
+    pgrep -if "^([a-z]:.*\\\\)?${name}( |\$)" >/dev/null 2>&1
+}
+
 launch_logged() {  # launch_logged LABEL WORKDIR EXE [ARGS...]
     local label="$1" workdir="$2"
     shift 2
+    local exe_name
+    exe_name="$(basename "$1")"
     local log="$LOG_DIR/$TS-$label.log"
     local marker="$WORK_ROOT/.marker-$TS"
     touch "$marker"
@@ -525,13 +572,23 @@ launch_logged() {  # launch_logged LABEL WORKDIR EXE [ARGS...]
     local rc=0
     if [ "$INTERRUPTED" != "1" ]; then
         wait "$pid"; rc=$?
-        say "Process exited with code $rc; waiting up to 15 min for child processes (Ctrl+C to stop)"
-        "$WINESERVER" -w &
-        local wpid=$! t=0
-        while kill -0 "$wpid" 2>/dev/null && [ $t -lt 900 ] && [ "$INTERRUPTED" != "1" ]; do
-            sleep 1; t=$((t + 1))
-        done
-        kill "$wpid" 2>/dev/null
+        local t=0
+        if [ "$label" = installer ]; then
+            # Wait for the installer's own processes only. Altium itself, started from the
+            # installer's last page, keeps running and mustn't hold up setup.
+            say "Process exited with code $rc; waiting up to 15 min for the installer to close (Ctrl+C to stop)"
+            while windows_process_running "$exe_name" && [ $t -lt 900 ] && [ "$INTERRUPTED" != "1" ]; do
+                sleep 1; t=$((t + 1))
+            done
+        else
+            say "Process exited with code $rc; waiting up to 15 min for child processes (Ctrl+C to stop)"
+            "$WINESERVER" -w &
+            local wpid=$!
+            while kill -0 "$wpid" 2>/dev/null && [ $t -lt 900 ] && [ "$INTERRUPTED" != "1" ]; do
+                sleep 1; t=$((t + 1))
+            done
+            kill "$wpid" 2>/dev/null
+        fi
     fi
     if [ "$INTERRUPTED" = "1" ]; then
         [ $rc -eq 0 ] && rc=130
@@ -608,6 +665,7 @@ cmd_run() {
         fi ;;
     esac
     wine_env "$WINEDEBUG_RUN"
+    apply_display_scale
     # Only Altium 18+ (X2.EXE) has the WebView2 browser the watchdog ends.
     case "$exe" in *X2.EXE|*x2.exe) [ "${KILL_WEBVIEW2:-1}" = "1" ] && webview2_watchdog & ;; esac
     # Match the sRGB GDI surfaces on both versions, including AD26's UI around its GPU canvas.
@@ -730,7 +788,7 @@ cmd_doctor() {
         sysctl -n machdep.cpu.brand_string hw.memsize hw.optional.arm64 2>&1
         echo "rosetta: $(arch -x86_64 /usr/bin/true 2>/dev/null && echo yes || echo no)"
         df -h "$HOME" 2>&1
-        echo "brew: $(find_brew || echo none)"
+        echo "macports: $(command -v port || ls /opt/local/bin/port 2>/dev/null || echo none)"
         echo "cabextract: $(command -v cabextract || echo none)"
         section "kit"
         echo "KIT_DIR=$KIT_DIR"; echo "ALTIUM_DIR=$ALTIUM_DIR"; echo "WORK_ROOT=$WORK_ROOT"
@@ -765,7 +823,7 @@ cmd_wine() {
 }
 
 cmd_reset() {
-    case "$PREFIX" in */AltiumWine/prefix) ;; *) die "Refusing to delete unexpected path: $PREFIX" ;; esac
+    case "$PREFIX" in "$WORK_ROOT/prefix"|"$WORK_ROOT/volume/prefix") ;; *) die "Refusing to delete unexpected path: $PREFIX" ;; esac
     [ -d "$PREFIX" ] || { say "No prefix at $PREFIX"; return 0; }
     if ask_yes "Delete the Wine prefix $PREFIX (Altium install inside it goes too)?"; then
         select_wine && WINEPREFIX="$PREFIX" "$WINESERVER" -k 2>/dev/null
@@ -862,7 +920,7 @@ cmd_uninstall() {
     [ "${1:-}" = "--yes" ] && yes=1
     # Only delete a directory that is recognizably ours.
     case "$WORK_ROOT" in ""|/|"$HOME"|"$HOME/") die "Refusing to delete WORK_ROOT=$WORK_ROOT" ;; esac
-    [ -d "$WORK_ROOT/prefix" ] || [ -d "$WORK_ROOT/wine" ] || [ -d "$WORK_ROOT/wine-patched" ] \
+    [ -d "$WORK_ROOT/prefix" ] || [ -d "$IMAGE" ] || [ -d "$WORK_ROOT/wine" ] || [ -d "$WORK_ROOT/wine-patched" ] \
         || die "$WORK_ROOT doesn't look like an Altium-on-Wine install (no prefix/ or wine/); not deleting it."
     warn "This deletes $WORK_ROOT ($(du -sh "$WORK_ROOT" 2>/dev/null | cut -f1)): Wine, the Altium install and"
     warn "everything stored inside the Windows prefix, including projects under"
@@ -876,6 +934,7 @@ cmd_uninstall() {
     fi
     altium_running && die "Altium is running. Close it first."
     if select_wine; then WINEPREFIX="$PREFIX" "$WINESERVER" -k 2>/dev/null; sleep 1; fi
+    if volume_mounted; then hdiutil detach -quiet "$VOLUME" || hdiutil detach -quiet -force "$VOLUME" || die "Couldn't unmount $VOLUME"; fi
     local app
     for app in "$HOME/Applications/Altium Designer"*"(Wine).app"; do  # only launchers for this root
         [ -f "$app/Contents/MacOS/altium-wine-launcher" ] || continue
@@ -892,6 +951,7 @@ main() {
     echo "# altium-wine.sh $*  ($(date); kit: $KIT_DIR)"
     local cmd="${1:-default}"
     [ $# -gt 0 ] && shift
+    case "$cmd" in help|-h|--help|uninstall) ;; *) ensure_volume ;; esac
     case "$cmd" in
         default)
             ensure_setup

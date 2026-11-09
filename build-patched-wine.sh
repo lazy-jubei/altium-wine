@@ -32,7 +32,7 @@
 #   i386-windows/wined3d.dll    patches/0018 (Staging baseline) + 0019 + 0022 (AD17 uploads)
 #   bin/wineserver              patches/0014 (Staging baseline) + 0005 (EPIPE) + 0013 (signed DPI)
 #
-# Building needs Xcode Command Line Tools, Homebrew (bison), ~3 GB disk and ~15 min the first
+# Building needs Xcode Command Line Tools, MacPorts (bison), ~3 GB disk and ~15 min the first
 # time (configure + host tools run under Rosetta). llvm-mingw is downloaded into tools/.
 # Only modules that need nothing beyond the compiler are rebuilt, so every other part of the
 # tested bundle stays byte-identical.
@@ -111,12 +111,11 @@ say "Stock bundle: $STOCK_APP ($FLAVOR $VER)"
 # ---- source-built modules ---------------------------------------
 build_modules() {
     xcode-select -p >/dev/null 2>&1 || die "Xcode Command Line Tools missing. Run: xcode-select --install (or use --modules DIR)"
-    local brew="" b
-    for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do [ -x "$b" ] && brew="$b" && break; done
-    [ -n "$brew" ] || die "Homebrew is needed for bison >= 3 (https://brew.sh), or use --modules DIR."
-    "$brew" list bison >/dev/null 2>&1 || { say "brew install bison"; "$brew" install bison || die "bison install failed"; }
-    local bison_bin
-    bison_bin="$("$brew" --prefix bison)/bin"
+    # bison >= 3 (macOS's own is too old) comes from MacPorts.
+    # shellcheck source=tools/macports.sh
+    . "$(dirname "$0")/tools/macports.sh"
+    macports_install bison || die "Installing bison with MacPorts failed (or use --modules DIR)."
+    local bison_bin="$MACPORTS_BIN"
 
     local llvm="$TOOLS_DIR/llvm-mingw"
     if [ ! -x "$llvm/bin/x86_64-w64-mingw32-clang" ]; then
