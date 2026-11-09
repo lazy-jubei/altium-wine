@@ -55,6 +55,7 @@ Environment variables:
 | `PATCHED_MODULES_DIR` | Prebuilt `winemac.so`, `d2d1.dll` and `winhttp.dll` (+ `SHA256SUMS`) for the first `setup`, so no compiler is needed. |
 | `ALTIUM_WINEDEBUG` | `WINEDEBUG` channels for `run`. |
 | `KILL_WEBVIEW2=0` | Turns off the WebView2 watchdog. |
+| `AD26_CEF_SOFTWARE_RENDERING=0` | Lets AD26's Home Page browser try Chromium's GPU path (it crashes under Wine). |
 | `WINE_D2D_LAZY_STATE=0` | Turns off the Direct2D state-caching part of patch 0003. |
 
 ## Wine patches and settings
@@ -100,7 +101,7 @@ Verification:
 - **Retina:** `RetinaMode=y` plus 192 DPI (200%). Without it, Wine renders at half resolution and text is jagged.
 - **Fonts:** Segoe UI is mapped to Arial (from corefonts). The fallback font drew `-` as a box.
 - **WPF dialogs** had black areas. `Avalon.Graphics\DisableHWAcceleration=1` renders them in software.
-- **WebView2** (only drives the Home Page): its GPU process dies under Wine. The `AdditionalBrowserArguments` policy for `X2.EXE` runs it without GPU and without Chromium's sandbox. Wine doesn't enforce the Windows primitives that sandbox relies on, so the sandbox can't work here anyway. It only loads Altium's own pages.
+- **WebView2** (Altium's web panels; the Home Page is CefSharp, below): its GPU process dies under Wine. The `AdditionalBrowserArguments` policy for `X2.EXE` runs it without GPU and without Chromium's sandbox. Wine doesn't enforce the Windows primitives that sandbox relies on, so the sandbox can't work here anyway. It only loads Altium's own pages.
 
 ### WebView2 watchdog
 
@@ -128,6 +129,10 @@ Build `tools/VaultDpiFix/VaultDpiFix.csproj` with a .NET SDK. Run `VaultDpiFix.e
 The shared parameter decoder also now preserves literal/truncated underscores instead of treating every underscore as a two-digit hex escape. Previously a returned parameter name could abort the entire built-in Vault search with a `Substring` exception.
 
 Wine patches `0030` and `0032` correct the underlying font metrics used by layout. They do not rewrite captions or change point-size fonts. Published v1.1.1 modules predate these fixes.
+
+### AD26 CefSharp Home Page
+
+AD26's Home Page is CefSharp (Chromium 126), not WebView2, so the WebView2 policy never reached it. Its GPU process started ANGLE on Direct3D 11, failed to create a GLES 3 context, crashed three times (exit code 0x80000003) and gave up, leaving a white block on black. `--disable-gpu --disable-gpu-compositing` stops the crashes, but the page stays blank: Chromium's compositor then runs in its GPU process and paints into a window owned by `X2.EXE`, and Wine's Mac driver doesn't show drawing from another process. `--in-process-gpu` runs the compositor inside `X2.EXE`, and the page renders. CEF reads these switches from `X2.EXE`'s command line, so `run` adds them (`AD26_CEF_SOFTWARE_RENDERING=0` opts out). PCB rendering is unchanged. The WebView2 watchdog is separate and still needed.
 
 ### AD17 CefSharp browser
 
