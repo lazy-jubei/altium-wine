@@ -1,0 +1,59 @@
+From: Altium-on-Wine kit
+Subject: winemac: let Wine-placed windows cross onto a shorter screen
+
+Modules: dlls/winemac.drv
+Base: wine-11.16 with the kit's other winemac.drv patches (apply last)
+
+Altium draws its own title bar, so dragging it runs Wine's move loop, which places the
+window with -setFrame:. For titled windows AppKit then constrains the frame to the screen
+that holds most of the window, keeping the top below that screen's menu bar. A window
+taller than the visible area of the screen above (a stacked monitor layout with the Dock
+in between) stays mostly on the lower screen for most of the drag, so AppKit pushed it
+back on every step and it could never reach the upper screen. Wine already keeps
+windows where Windows rules put them, so AppKit's constraint now applies only while a
+native Mac title bar is being dragged.
+
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -85,6 +85,12 @@
+ }
+ 
+ 
++/* Set while the back end places a window.  Wine already keeps the window where
++   Windows rules put it, so AppKit must not move it to fit a single screen: a window
++   taller than a screen's visible area could otherwise never be dragged onto it. */
++static BOOL setting_frame_from_wine;
++
++
+ static BOOL frame_intersects_screens(NSRect frame, NSArray* screens)
+ {
+     NSScreen* screen;
+@@ -2044,6 +2050,9 @@
+         if (!NSIsEmptyRect(contentRect))
+         {
+             NSRect frame, oldFrame;
++            BOOL wasSettingFrame = setting_frame_from_wine;
++
++            setting_frame_from_wine = TRUE;
+ 
+             oldFrame = self.wine_fractionalFrame;
+             frame = [self frameRectForContentRect:contentRect];
+@@ -2102,6 +2111,8 @@
+                     [self windowDidResize:nil skipSizeMove:TRUE];
+                 }
+             }
++
++            setting_frame_from_wine = wasSettingFrame;
+         }
+     }
+ 
+@@ -2537,6 +2548,9 @@
+         // it.
+         NSArray* screens = [NSScreen screens];
+         NSRect contentRect = [self contentRectForFrameRect:frameRect];
++        // Wine places windows itself (including its own move loop for Windows-drawn
++        // title bars); only constrain drags of a native title bar, as AppKit would.
++        if (setting_frame_from_wine || !draggingPhase) return frameRect;
+         if (!screen_covered_by_rect(contentRect, screens) &&
+             frame_intersects_screens(frameRect, screens))
+             frameRect = [super constrainFrameRect:frameRect toScreen:screen];
