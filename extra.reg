@@ -24,7 +24,7 @@ Windows Registry Editor Version 5.00
 "d3d11"="native,builtin"
 "d3d10core"="native,builtin"
 
-; Microsoft Edge WebView2 (Altium's Home Page and web panels): its GPU process dies under
+; Microsoft Edge WebView2 (Altium's web panels; the Home Page is CefSharp): its GPU process dies under
 ; Wine and the browser quits ("GPU process isn't usable"). Altium passes its own arguments,
 ; so the WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS variable is ignored; this policy isn't.
 ; --no-sandbox: Wine doesn't enforce the Windows primitives (restricted tokens, integrity

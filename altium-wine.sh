@@ -674,7 +674,14 @@ cmd_run() {
         *X2.EXE|*x2.exe)
             export ALTIUM_MAC_SRGB="${AD26_SRGB_WINDOWS:-1}"
             export WINE_D2D_PRIMITIVE_CACHE="${AD26_D2D_PRIMITIVE_CACHE:-1}"
-            export WINE_D2D_BATCH="${AD26_D2D_BATCH:-1}" ;;
+            export WINE_D2D_BATCH="${AD26_D2D_BATCH:-1}"
+            # AD26's Home page is CefSharp (Chromium), not WebView2. Its GPU process crashes
+            # under Wine, and Wine doesn't show a window that another process draws into, so
+            # Chromium's compositor runs in software inside X2.EXE. CEF reads these switches
+            # from X2.EXE's command line.
+            if [ "${AD26_CEF_SOFTWARE_RENDERING:-1}" = "1" ]; then
+                set -- --disable-gpu --disable-gpu-compositing --in-process-gpu "$@"
+            fi ;;
         *DXP.EXE|*dxp.exe) export ALTIUM_MAC_SRGB="${AD17_SRGB_WINDOWS:-1}" ;;
     esac
     # AD17's CefSharp GPU process spins under Wine. Software Chromium rendering
@@ -727,8 +734,8 @@ cmd_run() {
     fi
 }
 
-# Altium's Microsoft Edge WebView2 browser (it only drives the Home Page, which renders blank
-# under Wine) has a thread whose message loop spins forever under Wine and floods wineserver,
+# Altium's Microsoft Edge WebView2 browser (web panels; the Home Page is CefSharp, see
+# AD26_CEF_SOFTWARE_RENDERING) has a thread whose message loop spins forever under Wine and floods wineserver,
 # which more than halves Altium's frame rate (PCB pan measured at ~50 fps with it, ~130 fps
 # without). Wait for the editor to respond and become idle before ending it: a fixed delay
 # can interrupt a large board's startup and cause "Invalid window handle". Blocking the
