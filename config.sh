@@ -73,6 +73,7 @@ AD26_D2D_BATCH="${AD26_D2D_BATCH:-1}"
 AD26_DXVK_DIR="${AD26_DXVK_DIR:-}"
 
 # Retina mode (Wine draws at 2x, Windows UI at 200%): "auto" turns it on only when the main
-# display is Retina; on a standard display it blurs text and breaks partial redraws.
+# display is Retina. On a standard display it would blur text and break partial redraws, so
+# there Direct2D antialiases small text instead (patch 0038, WINE_D2D_TEXT_AA=1).
 # Set "y" or "n" to force it. Checked each time Altium starts.
 RETINA_MODE="auto"

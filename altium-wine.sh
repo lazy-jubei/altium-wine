@@ -305,7 +305,7 @@ display_scale() {  # the main display's backing scale factor (1 = standard, 2 = 
     osascript -l JavaScript -e 'ObjC.import("AppKit"); $.NSScreen.mainScreen.backingScaleFactor' 2>/dev/null
 }
 
-apply_display_scale() {  # Retina mode (2x drawing, 192 DPI) only on a Retina display
+apply_display_scale() {  # match the main display: 2x drawing on Retina, antialiased text on 1x
     local want="$RETINA_MODE" dpi
     if [ "$want" = auto ]; then
         case "$(display_scale)" in
@@ -315,9 +315,10 @@ apply_display_scale() {  # Retina mode (2x drawing, 192 DPI) only on a Retina di
         esac
     fi
     case "$want" in y) dpi=192 ;; n) dpi=96 ;; *) return 0 ;; esac
+    # On a standard display Retina mode draws everything at 2x and scales it down (blurry
+    # text, misplaced partial redraws). Instead, patch 0038 lets Direct2D antialias small text.
+    if [ "$want" = n ]; then export WINE_D2D_TEXT_AA=1; else unset WINE_D2D_TEXT_AA; fi
     [ "$(cat "$PREFIX/.altium-kit-display" 2>/dev/null)" = "$want" ] && return 0
-    # On a standard display, Retina mode draws everything at 2x and scales it down: blurry
-    # text, and partial redraws land in the wrong place (broken grid lines).
     WINEPREFIX="$PREFIX" "$WINE" reg add 'HKCU\Software\Wine\Mac Driver' /v RetinaMode /d "$want" /f >/dev/null 2>&1 \
         && WINEPREFIX="$PREFIX" "$WINE" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$dpi" /f >/dev/null 2>&1 \
         && echo "$want" > "$PREFIX/.altium-kit-display" \

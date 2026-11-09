@@ -29,6 +29,8 @@ A setup window opens and walks you through it. You only need to do two things: c
 
 The installer sets up Wine and fonts and creates `~/Applications/Altium Designer (Wine).app`. It uses prebuilt Wine modules, so Xcode isn't required. The fonts need `cabextract`, which comes from MacPorts; setup installs MacPorts from its notarized package if it isn't there (one administrator password). Rosetta 2 is required.
 
+On a Retina display Altium draws at 2× for sharp text. On a standard (1×) display it draws at 1× and a Direct2D patch antialiases the schematic text instead; the display is checked each time Altium starts (`RETINA_MODE` in `config.sh` overrides it).
+
 Altium's Windows drive lives in its own case-insensitive disk image, `~/AltiumWine/altium-wine.sparsebundle` (mounted at `~/AltiumWine/volume`), so it works the same on any Mac drive. The image only takes the space it uses, up to 200 GB. An install from before the image keeps its prefix in `~/AltiumWine/prefix`.
 
 Optimizations include:
