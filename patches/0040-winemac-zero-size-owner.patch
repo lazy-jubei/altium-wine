@@ -1,0 +1,36 @@
+From: Altium-on-Wine kit
+Subject: winemac: don't attach owned windows to a zero-size owner
+
+Modules: dlls/winemac.drv
+Base: wine-11.16 (applies to stock source and to the kit's patched tree)
+
+Wine makes an owned window a Cocoa child of its owner's window. macOS keeps a child
+window on its parent's display, and with "Displays have separate Spaces" (the default)
+it isn't drawn on any other display. Delphi programs such as Altium own every dialog,
+panel and dropdown by a hidden 0x0 application window, which Wine shows as a 1x1
+window in the middle of the main display. So with Altium on another monitor, its
+workspace dropdown ("Not Connected") and other popups were ordered in and focused but
+never drawn: they only flashed. A zero-size owner has nothing on screen to keep its
+owned windows above, so its owned windows get no Cocoa parent.
+
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -270,6 +270,18 @@
+     owner = NtUserGetWindowRelative(data->hwnd, GW_OWNER);
+     if (owner)
+         owner = NtUserGetAncestor(owner, GA_ROOT);
++    if (owner)
++    {
++        /* A Cocoa child window stays on its parent's display (with "Displays have
++           separate Spaces", it isn't drawn anywhere else). A zero-size owner, such
++           as the hidden application window of Delphi programs (Altium), has
++           nothing on screen to keep its owned windows above, so don't attach them
++           to it: they would only show on the display that holds its 1x1 window. */
++        RECT rect;
++        if (NtUserGetWindowRect(owner, &rect, NtUserGetDpiForWindow(owner)) &&
++            (rect.right <= rect.left || rect.bottom <= rect.top))
++            owner = 0;
++    }
+     owner_win = macdrv_get_cocoa_window(owner, TRUE);
+     macdrv_set_cocoa_parent_window(data->cocoa_window, owner_win);
+ 
