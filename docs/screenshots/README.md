@@ -33,3 +33,6 @@ shortened for the capture; no schematic content is altered.
 
 The 3D rotation and straight schematic pan GIFs were recorded in Altium Designer
 26.10.1 on October 6, 2026, with only the public LimeSDR project open.
+
+`setup-window.png` shows the setup window's welcome page on macOS 15.8.2, captured
+on November 9, 2026.
