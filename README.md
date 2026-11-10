@@ -27,6 +27,8 @@ bash install.sh --altium-installer /path/to/offline-setup
 
 A setup window opens and walks you through it. You only need to do two things: choose the Altium offline installer, then sign in inside the Altium installer when it opens. Everything else runs on its own. The window has a Terminal pane with the details. It's built on your Mac from `tools/AltiumInstaller.swift` with Apple's Command Line Tools, so there's no downloaded app to approve. Without the Command Line Tools, or with `--terminal`, the installer asks in Terminal instead.
 
+![The Altium Designer setup window](docs/screenshots/setup-window.png)
+
 The installer sets up Wine and fonts and creates `~/Applications/Altium Designer (Wine).app`. It uses prebuilt Wine modules, so Xcode isn't required. The fonts need `cabextract`, which comes from MacPorts; setup installs MacPorts from its notarized package if it isn't there (one administrator password). Rosetta 2 is required.
 
 On a Retina display Altium draws at 2× for sharp text. On a standard (1×) display it draws at 1× and a Direct2D patch antialiases the schematic text instead; the display is checked each time Altium starts (`RETINA_MODE` in `config.sh` overrides it).
