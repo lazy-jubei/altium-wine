@@ -502,7 +502,7 @@ fetch() {  # fetch URL FILE SHA256 - download (reusing a verified copy) and veri
     [ -n "$want" ] || die "No checksum for $(basename "$file") in this install.sh."
     if [ -s "$file" ] && [ "$(shasum -a 256 "$file" | awk '{print $1}')" = "$want" ]; then return 0; fi
     say "Downloading $(basename "$file")"
-    curl -fL --progress-bar -o "$file.part" "$url" || { rm -f "$file.part"; die "Download failed: $url"; }
+    curl --proto '=https' -fL --progress-bar -o "$file.part" "$url" || { rm -f "$file.part"; die "Download failed: $url"; }
     [ "$(shasum -a 256 "$file.part" | awk '{print $1}')" = "$want" ] \
         || { rm -f "$file.part"; die "Checksum mismatch for $(basename "$file"); not using it."; }
     mv "$file.part" "$file"

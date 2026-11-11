@@ -170,7 +170,7 @@ known_sha256() {
 
 resolve_latest_wine() {
     local url
-    url="$(curl -fsSIL -o /dev/null -w '%{url_effective}' "$GCENX_REPO/releases/latest" 2>/dev/null)"
+    url="$(curl --proto '=https' -fsSIL -o /dev/null -w '%{url_effective}' "$GCENX_REPO/releases/latest" 2>/dev/null)"
     case "$url" in
         */tag/*) echo "${url##*/tag/}" ;;
         *) echo "" ;;
@@ -185,7 +185,7 @@ download_wine_version() {  # download_wine_version VERSION -> 0 on success, extr
 
     if [ ! -s "$tarball" ]; then
         say "Downloading $asset (~185 MB)"
-        curl -fL --progress-bar -o "$tarball.part" "$url" || { rm -f "$tarball.part"; warn "Download failed: $url"; return 1; }
+        curl --proto '=https' -fL --progress-bar -o "$tarball.part" "$url" || { rm -f "$tarball.part"; warn "Download failed: $url"; return 1; }
         mv "$tarball.part" "$tarball"
     fi
 
@@ -292,7 +292,7 @@ ensure_dxvk() {
     local tarball="$DL_DIR/$DXVK_ASSET"
     if [ ! -s "$tarball" ]; then
         say "Downloading $DXVK_ASSET (~4 MB)"
-        curl -fL --progress-bar -o "$tarball.part" "https://github.com/Gcenx/DXVK-macOS/releases/download/$DXVK_TAG/$DXVK_ASSET" \
+        curl --proto '=https' -fL --progress-bar -o "$tarball.part" "https://github.com/Gcenx/DXVK-macOS/releases/download/$DXVK_TAG/$DXVK_ASSET" \
             && mv "$tarball.part" "$tarball" || { rm -f "$tarball.part"; die "DXVK download failed."; }
     fi
     [ "$(sha256_of "$tarball")" = "$DXVK_SHA256" ] || { rm -f "$tarball"; die "DXVK checksum mismatch; deleted the download, try again."; }
@@ -397,7 +397,7 @@ ensure_setup() {
 ensure_winetricks() {
     if [ ! -x "$WINETRICKS" ] || [ -n "$(find "$WINETRICKS" -mtime +14 2>/dev/null)" ]; then
         say "Fetching winetricks"
-        curl -fsSL -o "$WINETRICKS.part" "https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks" \
+        curl --proto '=https' -fsSL -o "$WINETRICKS.part" "https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks" \
             && mv "$WINETRICKS.part" "$WINETRICKS" && chmod +x "$WINETRICKS" \
             || { rm -f "$WINETRICKS.part"; [ -x "$WINETRICKS" ] || die "Couldn't download winetricks."; }
     fi

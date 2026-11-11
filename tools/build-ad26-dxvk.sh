@@ -13,7 +13,7 @@ mkdir -p "$BUILD_ROOT/downloads"
 BUILD_ROOT="$(cd "$BUILD_ROOT" && pwd)"
 archive="$BUILD_ROOT/downloads/dxvk.tar.gz"
 if [ ! -f "$archive" ]; then
-    curl -fL --retry 3 https://codeload.github.com/Gcenx/DXVK-macOS/tar.gz/8f1e28deed3ad30802f7e1bdff428ec14e6e7817 -o "$archive.part"
+    curl --proto '=https' -fL --retry 3 https://codeload.github.com/Gcenx/DXVK-macOS/tar.gz/8f1e28deed3ad30802f7e1bdff428ec14e6e7817 -o "$archive.part"
     mv "$archive.part" "$archive"
 fi
 printf '%s  %s\n' b3fc4a0415b3e4cdfb40497bec191c10f183ec2eb498950aa1f638f176cb996b "$archive" | shasum -a 256 -c -

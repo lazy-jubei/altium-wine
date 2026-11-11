@@ -120,12 +120,12 @@ build_modules() {
     local llvm="$TOOLS_DIR/llvm-mingw"
     if [ ! -x "$llvm/bin/x86_64-w64-mingw32-clang" ]; then
         local url tag asset
-        url="$(curl -fsSIL -o /dev/null -w '%{url_effective}' https://github.com/mstorsjo/llvm-mingw/releases/latest)"
+        url="$(curl --proto '=https' -fsSIL -o /dev/null -w '%{url_effective}' https://github.com/mstorsjo/llvm-mingw/releases/latest)"
         tag="${url##*/tag/}"
         [ -n "$tag" ] && [ "$tag" != "$url" ] || die "Couldn't resolve the llvm-mingw release."
         asset="llvm-mingw-${tag}-ucrt-macos-universal.tar.xz"
         say "Downloading $asset (~100 MB)"
-        curl -fL --progress-bar -o "$TOOLS_DIR/$asset" "https://github.com/mstorsjo/llvm-mingw/releases/download/$tag/$asset" || die "llvm-mingw download failed."
+        curl --proto '=https' -fL --progress-bar -o "$TOOLS_DIR/$asset" "https://github.com/mstorsjo/llvm-mingw/releases/download/$tag/$asset" || die "llvm-mingw download failed."
         rm -rf "$llvm" "$TOOLS_DIR/${asset%.tar.xz}"
         tar -xJf "$TOOLS_DIR/$asset" -C "$TOOLS_DIR" || die "llvm-mingw extract failed."
         mv "$TOOLS_DIR/${asset%.tar.xz}" "$llvm"
@@ -138,7 +138,7 @@ build_modules() {
     local tarball="$DL_DIR/wine-$WINE_VER.tar.xz"
     if [ ! -s "$tarball" ]; then
         say "Downloading Wine $WINE_VER sources (~30 MB)"
-        curl -fL --progress-bar -o "$tarball.part" "$WINE_SRC_URL" && mv "$tarball.part" "$tarball" || die "Source download failed."
+        curl --proto '=https' -fL --progress-bar -o "$tarball.part" "$WINE_SRC_URL" && mv "$tarball.part" "$tarball" || die "Source download failed."
     fi
     [ "$(sha256_of "$tarball")" = "$WINE_SRC_SHA256" ] || { rm -f "$tarball"; die "Wine source checksum mismatch; deleted it, try again."; }
 

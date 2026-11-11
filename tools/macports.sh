@@ -31,7 +31,7 @@ ensure_macports() {  # install MacPorts from its signed release package for this
     local major release url work pkg
     major="$(sw_vers -productVersion | cut -d. -f1)"
     echo "Installing MacPorts (the package manager for the build tools)…"
-    release="$(curl -fsSL --retry 3 https://api.github.com/repos/macports/macports-base/releases/latest)" \
+    release="$(curl --proto '=https' -fsSL --retry 3 https://api.github.com/repos/macports/macports-base/releases/latest)" \
         || { echo "Couldn't look up the MacPorts release." >&2; return 1; }
     url="$(printf '%s\n' "$release" | grep -o '"browser_download_url": *"[^"]*-'"$major"'-[A-Za-z]*\.pkg"' \
         | sed 's/.*"\(https:[^"]*\)"$/\1/' | head -n 1)"
@@ -39,8 +39,8 @@ ensure_macports() {  # install MacPorts from its signed release package for this
     work="$(mktemp -d /private/tmp/macports.XXXXXX)" || return 1
     pkg="$work/${url##*/}"
     # GitHub first, then MacPorts' own download server (the same signed package).
-    if ! curl -fL --retry 3 --progress-bar -o "$pkg" "$url" \
-        && ! curl -fL --retry 3 --progress-bar -o "$pkg" "https://distfiles.macports.org/MacPorts/${url##*/}"; then
+    if ! curl --proto '=https' -fL --retry 3 --progress-bar -o "$pkg" "$url" \
+        && ! curl --proto '=https' -fL --retry 3 --progress-bar -o "$pkg" "https://distfiles.macports.org/MacPorts/${url##*/}"; then
         rm -rf "$work"; echo "Downloading MacPorts failed." >&2; return 1
     fi
     # Only install a package that Apple notarized and the MacPorts team signed.

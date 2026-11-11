@@ -14,7 +14,7 @@ BUILD_ROOT="$(cd "$BUILD_ROOT" && pwd)"
 fetch() {
     local name="$1" sha="$2" url="$3"
     if [ ! -f "$BUILD_ROOT/downloads/$name" ]; then
-        curl -fL --retry 3 "$url" -o "$BUILD_ROOT/downloads/$name.part"
+        curl --proto '=https' -fL --retry 3 "$url" -o "$BUILD_ROOT/downloads/$name.part"
         mv "$BUILD_ROOT/downloads/$name.part" "$BUILD_ROOT/downloads/$name"
     fi
     printf '%s  %s\n' "$sha" "$BUILD_ROOT/downloads/$name" | shasum -a 256 -c -
