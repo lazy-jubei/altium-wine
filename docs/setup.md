@@ -4,22 +4,22 @@
 
 Nothing is installed system-wide. Wine, the prefix and the downloads all live in `~/AltiumWine`, so deleting that folder undoes everything (or use `install.sh --uninstall`). The exceptions:
 
-- Rosetta 2 if it's missing (asked first).
+- On Apple Silicon, Rosetta 2 if it's missing (asked first).
 - MacPorts, if it isn't installed, then `cabextract` for the fonts and `bison` when building Wine. Installing them needs an administrator password (or passwordless sudo).
 - The launcher app in `~/Applications`.
 
 ## Install
 
-Download the [v1.0.0 installer](https://github.com/lazy-jubei/altium-wine/releases/tag/v1.0.0), inspect it, then run it:
+Download the installer from the [latest release](https://github.com/lazy-jubei/altium-wine/releases/latest), inspect it, then run it:
 
 ```bash
-curl -fL https://github.com/lazy-jubei/altium-wine/releases/download/v1.0.0/install.sh -o install.sh
+curl -fL https://github.com/lazy-jubei/altium-wine/releases/latest/download/install.sh -o install.sh
 bash install.sh
 ```
 
 For a specific offline setup folder or ZIP, use `bash install.sh --altium-installer /path/to/offline-setup`. The release includes prebuilt patched Wine modules, so Xcode is not required for the default install.
 
-The installer sets up Wine and fonts, runs your Altium installer, and creates `~/Applications/Altium Designer (Wine).app`. Downloads are checksum-verified. Get the Altium offline installer from your Altium account.
+A setup window walks you through it (`--terminal` asks in Terminal instead). The installer sets up Wine and fonts, runs your Altium installer, and creates `~/Applications/Altium Designer (Wine).app`. Downloads are checksum-verified. Get the Altium offline installer from your Altium account.
 
 - `--altium-installer PATH`
 - `--skip-altium`

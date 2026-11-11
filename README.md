@@ -2,7 +2,7 @@
 
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=lazy-jubei_altium-wine&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=lazy-jubei_altium-wine)
 
-Run Altium Designer on Apple Silicon Macs with patched Wine. Tested with Altium Designer 17.1 and 26.10.1 on an M4 Mac running macOS 15.7.9.
+Run Altium Designer on Macs with patched Wine. Tested with Altium Designer 17.1 and 26.10.1 on an M4 Mac running macOS 15.7.9, and with 26.11.1 on an Intel Mac running macOS 15.8.2.
 
 Altium 365 works, including project cloning.
 
@@ -12,10 +12,10 @@ Altium 365 works, including project cloning.
 
 ## Install
 
-Get the Altium offline installer from your Altium account, then download and run the [kit installer](https://github.com/lazy-jubei/altium-wine/releases/tag/v1.2.0):
+Get the Altium offline installer from your Altium account, then download and run the [kit installer](https://github.com/lazy-jubei/altium-wine/releases/latest) from the latest release:
 
 ```bash
-curl -fL https://github.com/lazy-jubei/altium-wine/releases/download/v1.2.0/install.sh -o install.sh
+curl -fL https://github.com/lazy-jubei/altium-wine/releases/latest/download/install.sh -o install.sh
 bash install.sh
 ```
 
@@ -29,7 +29,7 @@ A setup window opens and walks you through it. You only need to do two things: c
 
 ![The Altium Designer setup window](docs/screenshots/setup-window.png)
 
-The installer sets up Wine and fonts and creates `~/Applications/Altium Designer (Wine).app`. It uses prebuilt Wine modules, so Xcode isn't required. The fonts need `cabextract`, which comes from MacPorts; setup installs MacPorts from its notarized package if it isn't there (one administrator password). Rosetta 2 is required.
+The installer sets up Wine and fonts and creates `~/Applications/Altium Designer (Wine).app`. It uses prebuilt Wine modules, so Xcode isn't required. The fonts need `cabextract`, which comes from MacPorts; setup installs MacPorts from its notarized package if it isn't there (one administrator password). On Apple Silicon, Rosetta 2 is required; setup offers to install it.
 
 On a Retina display Altium draws at 2× for sharp text. On a standard (1×) display it draws at 1× and a Direct2D patch antialiases the schematic text instead; the display is checked each time Altium starts (`RETINA_MODE` in `config.sh` overrides it).
 
@@ -42,6 +42,8 @@ Optimizations include:
 - Queued Direct3D uploads, [AD17 PCB helpers and optional Metal grid caching](docs/technical-notes.md#altium-17).
 - Fixes for hidden dialogs, floating panels, tooltip input and Vault freezes.
 - macOS app-control support and WebView2 cleanup that waits for an idle editor.
+- A working AD26 Home Page (rendered in software inside Altium).
+- Multi-monitor fixes: windows drag onto any display, and menus and dialogs open on the display Altium is on.
 
 For faster AD17 3D panning, disable **Use Ordered Blending in 3D** in **Preferences → PCB Editor → Display**. [Tuning details](docs/technical-notes.md).
 
@@ -65,7 +67,7 @@ Wine and Altium live in `~/AltiumWine`. Re-run `install.sh` to update.
 
 ## Build
 
-Requires Rosetta 2, Xcode Command Line Tools and MacPorts (installed for you if missing). Allow about 3 GB of disk space and 15 minutes for the first build.
+Requires Xcode Command Line Tools, MacPorts and, on Apple Silicon, Rosetta 2 (installed for you if missing). Allow about 3 GB of disk space and 15 minutes for the first build.
 
 ```bash
 git clone https://github.com/lazy-jubei/altium-wine.git
