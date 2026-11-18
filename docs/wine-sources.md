@@ -46,6 +46,9 @@ for image acquisition at the first transfer use.
 batches by default; either optimization can be disabled with its environment switch.
 `0042` caches scaled glyph bounds and bitmaps in the 64-bit DirectWrite module.
 The stock `dwrite.so` handles the FreeType calls.
+`0043` brings the clicked Altium document forward at its existing window level
+when it remains active and another app covers it. Set `AD26_RESTORE_CLICKED_WINDOW_ORDER=0`
+in `config.local.sh` to disable the check.
 The 64-bit Direct3D modules keep the stock renderer.
 `wow64cpu.dll` and `user32.dll` are transformed from the checksum-pinned stock
 bundle by two Python patchers in `patches/`. The server is compiled from source. No other stock modules are

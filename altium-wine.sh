@@ -673,6 +673,7 @@ cmd_run() {
     case "$exe" in
         *X2.EXE|*x2.exe)
             export ALTIUM_MAC_SRGB="${AD26_SRGB_WINDOWS:-1}"
+            export ALTIUM_RESTORE_CLICKED_WINDOW_ORDER="${AD26_RESTORE_CLICKED_WINDOW_ORDER:-1}"
             export WINE_D2D_PRIMITIVE_CACHE="${AD26_D2D_PRIMITIVE_CACHE:-1}"
             export WINE_D2D_BATCH="${AD26_D2D_BATCH:-1}"
             # AD26's Home page is CefSharp (Chromium), not WebView2. Its GPU process crashes

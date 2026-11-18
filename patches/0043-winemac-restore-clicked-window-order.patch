@@ -1,0 +1,87 @@
+From: Altium-on-Wine kit
+Subject: winemac: restore active window order after a document click
+
+Modules: dlls/winemac.drv
+Base: Wine 11.16 with the kit's Mac driver patches
+
+The active Altium document can briefly rise after a click and then be covered
+by another application's normal windows. After Wine and AppKit process the
+click, check whether another app's normal window covers the clicked document.
+Raise it at its existing level only while it remains the active key window.
+Preserve Wine-owned window ordering, modal dialogs, mouse capture and dragging.
+
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -1476,7 +1476,56 @@
+ 
+         [self updateCursor:FALSE];
+     }
++
++    /* A clicked document can stay key while a native normal window covers it.
++     * Once Wine has processed the click, repair the native order at its existing level. */
++    - (void) restoreClickedWindowOrder:(WineWindow*)window
++    {
++        if (!NSApp.isActive || NSApp.keyWindow != window || !window.isVisible ||
++            !window.isOnActiveSpace || window.parentWindow || window.disabled ||
++            window.noForeground || window.preventsAppActivation ||
++            window.level != NSNormalWindowLevel || !(window.styleMask & NSWindowStyleMaskTitled) ||
++            NSApp.modalWindow || window.attachedSheet || mouseCaptureWindow ||
++            windowsBeingDragged.count)
++            return;
+ 
++        CGWindowID number = (CGWindowID)window.windowNumber;
++        if (!number || window.windowNumber < 0) return;
++
++        CFArrayRef info = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenAboveWindow |
++                                                    kCGWindowListExcludeDesktopElements, number);
++        if (!info) return;
++
++        NSRect frame = window.frame;
++        BOOL coveredByAnotherApp = NO;
++        [self flipRect:&frame];
++        for (NSDictionary* entry in (NSArray*)info)
++        {
++            CGRect bounds;
++            if ([entry[(NSString*)kCGWindowLayer] integerValue] != NSNormalWindowLevel ||
++                !CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)entry[(NSString*)kCGWindowBounds], &bounds) ||
++                !CGRectIntersectsRect(bounds, NSRectToCGRect(frame)))
++                continue;
++
++            if ([entry[(NSString*)kCGWindowOwnerPID] intValue] == getpid())
++            {
++                // Preserve the order of Wine-owned dialogs and panels over the clicked window.
++                NSInteger other = [entry[(NSString*)kCGWindowNumber] integerValue];
++                if ([[NSApp windowWithWindowNumber:other] isKindOfClass:[WineWindow class]])
++                {
++                    coveredByAnotherApp = NO;
++                    break;
++                }
++            }
++            else if ([entry[(NSString*)kCGWindowAlpha] doubleValue] > 0.0)
++                coveredByAnotherApp = YES;
++        }
++        CFRelease(info);
++
++        if (coveredByAnotherApp)
++            [window orderFrontRegardless];
++    }
++
+     - (void) handleMouseButton:(NSEvent*)theEvent
+     {
+         WineWindow* window = (WineWindow*)[theEvent window];
+@@ -1606,5 +1655,15 @@
+         if (windowBroughtForward)
+         {
+             WineWindow* ancestor = [windowBroughtForward ancestorWineWindow];
++
++            const char *restoreOrder = getenv("ALTIUM_RESTORE_CLICKED_WINDOW_ORDER");
++            if (restoreOrder && !strcmp(restoreOrder, "1") &&
++                windowBroughtForward == ancestor && !mouseCaptureWindow && !windowsBeingDragged.count)
++            {
++                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
++                    [self restoreClickedWindowOrder:ancestor];
++                });
++            }
++
+             NSInteger ancestorNumber = [ancestor windowNumber];
+             NSInteger ancestorLevel = [ancestor level];

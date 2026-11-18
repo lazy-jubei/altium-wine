@@ -65,6 +65,9 @@ AD17_NATIVE_GDI_WORKERS="${AD17_NATIVE_GDI_WORKERS:-2}"
 # Match AD26's UI backing color space without changing its GPU canvas.
 AD26_SRGB_WINDOWS="${AD26_SRGB_WINDOWS:-1}"
 
+# Restore native window order if another app covers the active Altium document after a click.
+AD26_RESTORE_CLICKED_WINDOW_ORDER="${AD26_RESTORE_CLICKED_WINDOW_ORDER:-1}"
+
 # AD26's CefSharp Home page: render in software inside X2.EXE. Chromium's GPU process
 # crashes under Wine and the page stayed blank. Set to 0 to test Chromium's GPU path.
 AD26_CEF_SOFTWARE_RENDERING="${AD26_CEF_SOFTWARE_RENDERING:-1}"
