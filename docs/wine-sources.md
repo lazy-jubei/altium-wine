@@ -14,7 +14,7 @@ archive includes its AUTHORS, LICENSE and COPYING.LIB files.
 
 `build-patched-wine.sh` contains the configure options, compiler selection,
 module targets, patch order and binary transformations. It builds `winemac.so`,
-`d2d1.dll`, `winhttp.dll`, `gdiplus.dll` (64- and 32-bit), `msado15.dll` (64- and 32-bit), the 32-bit `d3dx9_43.dll`, `kernelbase.dll`, `d3d9.dll`, `wined3d.dll`, and `wineserver`
+`d2d1.dll`, `dwrite.dll`, `winhttp.dll`, `gdiplus.dll` (64- and 32-bit), `msado15.dll` (64- and 32-bit), the 32-bit `d3dx9_43.dll`, `kernelbase.dll`, `d3d9.dll`, `wined3d.dll`, and `wineserver`
 from Wine 11.16 source. `winemac.so` also includes Wine Staging's no-flicker patch,
 which is retained in `patches/0000`; `d3dx9_43.dll` includes Wine Staging's d3dx9 changes,
 retained in `patches/0008`. The rebuilt `kernelbase.dll` retains Wine Staging's six
@@ -44,6 +44,8 @@ including injected input, scripted closes and nested deactivation callbacks.
 for image acquisition at the first transfer use.
 `0037` enables bounded Direct2D primitive caching and ordered solid drawing
 batches by default; either optimization can be disabled with its environment switch.
+`0042` caches scaled glyph bounds and bitmaps in the 64-bit DirectWrite module.
+The stock `dwrite.so` handles the FreeType calls.
 The 64-bit Direct3D modules keep the stock renderer.
 `wow64cpu.dll` and `user32.dll` are transformed from the checksum-pinned stock
 bundle by two Python patchers in `patches/`. The server is compiled from source. No other stock modules are
@@ -79,7 +81,7 @@ cached mappings are limited to four and can acquire write access when source
 and destination roles reverse. The driver stops its own worker when unloaded.
 
 The worker is built with the macOS SDK as `bin/altium-gdi-copy-arm64`. The
-export contains sixteen files, all listed in `SHA256SUMS`. The original
+export contains seventeen modules, all listed in `SHA256SUMS`. The original
 Win32u, FreeType and Vulkan modules remain installed. Native copies defer
 while the compositor preview is active. `AD17_NATIVE_GDI=0` and
 `AD17_SMOOTH_SCHEMATIC_PAN=0` disable the respective paths before launching.

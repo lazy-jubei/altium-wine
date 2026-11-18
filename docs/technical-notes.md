@@ -62,7 +62,7 @@ Environment variables:
 
 ### Wine fixes (`~/AltiumWine/wine-patched`)
 
-`build-patched-wine.sh` copies the stock bundle and changes sixteen files. Everything else stays byte-identical to the tested Gcenx build.
+`build-patched-wine.sh` copies the stock bundle and changes seventeen files. Everything else stays byte-identical to the tested Gcenx build.
 
 | Problem | Fix | File changed |
 |---|---|---|

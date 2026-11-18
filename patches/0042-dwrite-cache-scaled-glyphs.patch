@@ -1,0 +1,237 @@
+From: Altium-on-Wine kit
+Subject: dwrite: cache glyph masks and bounds for stable linear transforms
+
+Modules: dlls/dwrite
+Base: wine-11.16
+
+Direct2D redraws antialiased schematic labels as the viewport moves. The
+translation affects glyph placement but FreeType does not use it when computing
+the individual glyph bounds and masks. Reuse the existing per-face LRU for
+these results and key them by the exact linear transform, glyph, font size
+and simulation flags. Distinguish bitmap rendering modes from bounds and
+advance lookups. Keep accounting for a bitmap added after its cache entry
+and evict entries until there is room for the allocation.
+
+--- a/dlls/dwrite/font.c
++++ b/dlls/dwrite/font.c
+@@ -49,6 +49,9 @@
+     float size;
+     unsigned short glyph;
+     unsigned short mode;
++    unsigned short bitmap_mode;
++    unsigned int simulations;
++    MATRIX_2X2 transform;
+ };
+ 
+ struct cache_entry
+@@ -82,10 +85,22 @@
+     free(entry);
+ }
+ 
+-static struct cache_entry * fontface_get_cache_entry(struct dwrite_fontface *fontface, size_t size,
+-        const struct cache_key *key)
++static void fontface_cache_make_room(struct dwrite_fontface *fontface, size_t size)
+ {
+-    struct cache_entry *entry, *old_entry;
++    while (fontface->cache.size > fontface->cache.max_size - size)
++    {
++        struct cache_entry *entry = LIST_ENTRY(list_tail(&fontface->cache.mru), struct cache_entry, mru);
++
++        fontface->cache.size -= sizeof(*entry) + entry->bitmap_size;
++        wine_rb_remove(&fontface->cache.tree, &entry->entry);
++        list_remove(&entry->mru);
++        fontface_release_cache_entry(entry);
++    }
++}
++
++static struct cache_entry *fontface_get_cache_entry(struct dwrite_fontface *fontface, const struct cache_key *key)
++{
++    struct cache_entry *entry;
+     struct wine_rb_entry *e;
+ 
+     if (!(e = wine_rb_get(&fontface->cache.tree, key)))
+@@ -94,17 +109,7 @@
+         entry->key = *key;
+         list_init(&entry->mru);
+ 
+-        size += sizeof(*entry);
+-
+-        if ((fontface->cache.size + size > fontface->cache.max_size) && !list_empty(&fontface->cache.mru))
+-        {
+-            old_entry = LIST_ENTRY(list_tail(&fontface->cache.mru), struct cache_entry, mru);
+-            fontface->cache.size -= (old_entry->bitmap_size + sizeof(*old_entry));
+-            wine_rb_remove(&fontface->cache.tree, &old_entry->entry);
+-            list_remove(&old_entry->mru);
+-            fontface_release_cache_entry(old_entry);
+-        }
+-
++        fontface_cache_make_room(fontface, sizeof(*entry));
+         if (wine_rb_put(&fontface->cache.tree, key, &entry->entry) == -1)
+         {
+             WARN("Failed to add cache entry.\n");
+@@ -112,7 +117,7 @@
+             return NULL;
+         }
+ 
+-        fontface->cache.size += size;
++        fontface->cache.size += sizeof(*entry);
+     }
+     else
+         entry = WINE_RB_ENTRY_VALUE(e, struct cache_entry, entry);
+@@ -123,6 +128,13 @@
+     return entry;
+ }
+ 
++static BOOL glyph_cache_key_is_finite(const struct cache_key *key)
++{
++    const MATRIX_2X2 *m = &key->transform;
++
++    return isfinite(key->size) && isfinite(m->m11) && isfinite(m->m12) && isfinite(m->m21) && isfinite(m->m22);
++}
++
+ static int fontface_get_glyph_advance(struct dwrite_fontface *fontface, float fontsize, unsigned short glyph,
+         unsigned short mode, BOOL *has_contours)
+ {
+@@ -133,7 +145,7 @@
+ 
+     *has_contours = FALSE;
+ 
+-    if (!(entry = fontface_get_cache_entry(fontface, 0, &key)))
++    if (!(entry = fontface_get_cache_entry(fontface, &key)))
+         return 0;
+ 
+     if (!entry->has_advance)
+@@ -157,8 +169,8 @@
+ 
+ void dwrite_fontface_get_glyph_bbox(IDWriteFontFace *iface, struct dwrite_glyphbitmap *bitmap)
+ {
+-    struct cache_key key = { .size = bitmap->emsize, .glyph = bitmap->glyph, .mode = DWRITE_MEASURING_MODE_NATURAL };
+     struct dwrite_fontface *fontface = unsafe_impl_from_IDWriteFontFace(iface);
++    struct cache_key key = { .size = bitmap->emsize, .glyph = bitmap->glyph, .simulations = bitmap->simulations };
+     struct get_glyph_bbox_params params;
+     struct cache_entry *entry;
+ 
+@@ -166,17 +178,12 @@
+     params.simulations = bitmap->simulations;
+     params.glyph = bitmap->glyph;
+     params.emsize = bitmap->emsize;
+-    matrix_2x2_from_dwrite_matrix(&params.m, bitmap->m ? bitmap->m : &identity);
++    matrix_2x2_from_dwrite_matrix(&key.transform, bitmap->m ? bitmap->m : &identity);
++    params.m = key.transform;
+ 
+     EnterCriticalSection(&fontface->cs);
+-    /* For now bypass cache for transformed cases. */
+-    if (bitmap->m && memcmp(&params.m, &identity_2x2, sizeof(params.m)))
++    if (glyph_cache_key_is_finite(&key) && (entry = fontface_get_cache_entry(fontface, &key)))
+     {
+-        params.bbox = &bitmap->bbox;
+-        UNIX_CALL(get_glyph_bbox, &params);
+-    }
+-    else if ((entry = fontface_get_cache_entry(fontface, 0, &key)))
+-    {
+         if (!entry->has_bbox)
+         {
+             params.bbox = &entry->bbox;
+@@ -185,6 +192,11 @@
+         }
+         bitmap->bbox = entry->bbox;
+     }
++    else
++    {
++        params.bbox = &bitmap->bbox;
++        UNIX_CALL(get_glyph_bbox, &params);
++    }
+     LeaveCriticalSection(&fontface->cs);
+ }
+ 
+@@ -196,16 +208,12 @@
+ static HRESULT dwrite_fontface_get_glyph_bitmap(struct dwrite_fontface *fontface, DWRITE_RENDERING_MODE1 rendering_mode,
+         unsigned int *is_1bpp, struct dwrite_glyphbitmap *bitmap)
+ {
+-    struct cache_key key = { .size = bitmap->emsize, .glyph = bitmap->glyph, .mode = DWRITE_MEASURING_MODE_NATURAL };
++    struct cache_key key = { .size = bitmap->emsize, .glyph = bitmap->glyph,
++        .simulations = fontface->simulations, .bitmap_mode = rendering_mode + 1 };
++    size_t bitmap_size = (size_t)bitmap->pitch * (bitmap->bbox.bottom - bitmap->bbox.top);
+     struct get_glyph_bitmap_params params;
+-    const RECT *bbox = &bitmap->bbox;
+-    unsigned int bitmap_size, _1bpp;
+-    struct cache_entry *entry;
+-    HRESULT hr = S_OK;
++    struct cache_entry *entry = NULL;
+ 
+-    bitmap_size = get_glyph_bitmap_pitch(rendering_mode, bbox->right - bbox->left) *
+-            (bbox->bottom - bbox->top);
+-
+     params.object = fontface->get_font_object(fontface);
+     params.simulations = fontface->simulations;
+     params.glyph = bitmap->glyph;
+@@ -215,38 +223,36 @@
+     params.pitch = bitmap->pitch;
+     params.bitmap = bitmap->buf;
+     params.is_1bpp = is_1bpp;
+-    matrix_2x2_from_dwrite_matrix(&params.m, bitmap->m ? bitmap->m : &identity);
++    matrix_2x2_from_dwrite_matrix(&key.transform, bitmap->m ? bitmap->m : &identity);
++    params.m = key.transform;
+ 
+     EnterCriticalSection(&fontface->cs);
+-    /* For now bypass cache for transformed cases. */
+-    if (bitmap->m && memcmp(&params.m, &identity_2x2, sizeof(params.m)))
++    if (glyph_cache_key_is_finite(&key) && bitmap_size && bitmap_size <= fontface->cache.max_size - sizeof(*entry))
++        entry = fontface_get_cache_entry(fontface, &key);
++
++    if (entry && entry->has_bitmap)
+     {
+-        UNIX_CALL(get_glyph_bitmap, &params);
++        memcpy(bitmap->buf, entry->bitmap, bitmap_size);
++        *is_1bpp = entry->is_1bpp;
+     }
+-    else if ((entry = fontface_get_cache_entry(fontface, bitmap_size, &key)))
+-    {
+-        if (entry->has_bitmap)
+-        {
+-            memcpy(bitmap->buf, entry->bitmap, entry->bitmap_size);
+-        }
+-        else
+-        {
+-            params.is_1bpp = &_1bpp;
+-            UNIX_CALL(get_glyph_bitmap, &params);
++    else
++    {
++        UNIX_CALL(get_glyph_bitmap, &params);
+ 
+-            entry->bitmap_size = bitmap_size;
+-            if ((entry->bitmap = malloc(entry->bitmap_size)))
+-                memcpy(entry->bitmap, bitmap->buf, entry->bitmap_size);
+-            entry->is_1bpp = !!_1bpp;
++        if (entry && (entry->bitmap = malloc(bitmap_size)))
++        {
++            /* The current entry is most recent. Its size plus the bitmap fits. */
++            fontface_cache_make_room(fontface, bitmap_size);
++            memcpy(entry->bitmap, bitmap->buf, bitmap_size);
++            entry->bitmap_size = bitmap_size;
++            entry->is_1bpp = !!*is_1bpp;
+             entry->has_bitmap = 1;
++            fontface->cache.size += bitmap_size;
+         }
+-        *is_1bpp = entry->is_1bpp;
+     }
+-    else
+-        hr = E_FAIL;
+     LeaveCriticalSection(&fontface->cs);
+ 
+-    return hr;
++    return S_OK;
+ }
+ 
+ static int fontface_cache_compare(const void *k, const struct wine_rb_entry *e)
+@@ -257,7 +263,9 @@
+     if (key->size != key2->size) return key->size < key2->size ? -1 : 1;
+     if (key->glyph != key2->glyph) return (int)key->glyph - (int)key2->glyph;
+     if (key->mode != key2->mode) return (int)key->mode - (int)key2->mode;
+-    return 0;
++    if (key->bitmap_mode != key2->bitmap_mode) return (int)key->bitmap_mode - (int)key2->bitmap_mode;
++    if (key->simulations != key2->simulations) return key->simulations < key2->simulations ? -1 : 1;
++    return memcmp(&key->transform, &key2->transform, sizeof(key->transform));
+ }
+ 
+ static void fontface_cache_init(struct dwrite_fontface *fontface)
