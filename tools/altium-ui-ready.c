@@ -1,9 +1,45 @@
-/* Keep WebView cleanup away from startup, modal dialogs and other Wine prefixes. */
+/* Initialize the browser preference and keep WebView cleanup away from startup and modal dialogs. */
 #include <windows.h>
 #include <tlhelp32.h>
 #include <wchar.h>
 #include <stdio.h>
 #include <string.h>
+
+static int seed_ad26_browser(const char *profile)
+{
+    static const char fallback[] = "0";
+    char path[256];
+    HKEY key;
+    HANDLE mutex;
+    DWORD lock_status, size = 0;
+    LONG status;
+    int length = snprintf(path, sizeof(path),
+            "Software\\Altium\\%s\\DesignExplorer\\Preferences\\InternalOptions\\System.UseWebView2",
+            profile);
+    if (length < 0 || (size_t)length >= sizeof(path)) return 64;
+
+    /* Serialize launcher writes inside the prefix. Never prompt for a registry overwrite. */
+    mutex = CreateMutexA(NULL, FALSE, "Local\\AltiumWineAd26Browser");
+    if (!mutex) return 1;
+    lock_status = WaitForSingleObject(mutex, 3000);
+    if (lock_status != WAIT_OBJECT_0 && lock_status != WAIT_ABANDONED) {
+        CloseHandle(mutex);
+        return 1;
+    }
+    status = RegCreateKeyExA(HKEY_CURRENT_USER, path, 0, NULL, 0,
+            KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY, NULL, &key, NULL);
+    if (status == ERROR_SUCCESS) {
+        status = RegQueryValueExA(key, "Value", NULL, NULL, NULL, &size);
+        if (status == ERROR_FILE_NOT_FOUND) {
+            status = RegSetValueExA(key, "Value", 0, REG_SZ, (const BYTE *)fallback, sizeof(fallback));
+            if (status == ERROR_SUCCESS) puts("Using Altium's CefSharp browser fallback");
+        }
+        RegCloseKey(key);
+    }
+    ReleaseMutex(mutex);
+    CloseHandle(mutex);
+    return status == ERROR_SUCCESS ? 0 : 1;
+}
 
 static BOOL image_is(HANDLE process, const WCHAR *name)
 {
@@ -18,7 +54,7 @@ static BOOL image_is(HANDLE process, const WCHAR *name)
 int main(int argc, char **argv)
 {
     BOOL cleanup = argc >= 2 && !strcmp(argv[1], "--cleanup");
-    HWND window = FindWindowW(L"TDocumentForm", NULL);
+    HWND window;
     DWORD owner;
     DWORD_PTR result;
     HANDLE main_process, snapshot;
@@ -27,7 +63,9 @@ int main(int argc, char **argv)
     FILETIME created, exited, kernel, user;
     char identity[64];
     ULARGE_INTEGER current;
+    if (argc == 3 && !strcmp(argv[1], "--seed-ad26-browser")) return seed_ad26_browser(argv[2]);
     if (argc > 3 || (argc > 1 && !cleanup)) return 64;
+    window = FindWindowW(L"TDocumentForm", NULL);
     if (!window) return 3;
     GetWindowThreadProcessId(window, &owner);
     main_process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, owner);

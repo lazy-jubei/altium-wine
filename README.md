@@ -42,7 +42,7 @@ Optimizations include:
 - Queued Direct3D uploads, [AD17 PCB helpers and optional Metal grid caching](docs/technical-notes.md#altium-17).
 - Fixes for hidden dialogs, floating panels, tooltip input and Vault freezes.
 - macOS app-control support and WebView2 cleanup that waits for an idle editor.
-- A working AD26 Home Page (rendered in software inside Altium).
+- AD26 uses its bundled CefSharp browser for the Home Page by default to avoid WebView2 errors under Wine.
 - Multi-monitor fixes: windows drag onto any display, and menus and dialogs open on the display Altium is on.
 
 For faster AD17 3D panning, disable **Use Ordered Blending in 3D** in **Preferences → PCB Editor → Display**. [Tuning details](docs/technical-notes.md).

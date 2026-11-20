@@ -183,7 +183,7 @@ build_modules() {
     /usr/bin/clang -arch arm64 -O3 "$SRC/dlls/winemac.drv/native_gdi_worker.c" -o "$MODULES_DIR/$NATIVE_MODULE" \
         || die "Native GDI worker build failed"
     "$llvm/bin/x86_64-w64-mingw32-clang" -O2 "$KIT_DIR/tools/altium-ui-ready.c" \
-        -o "$MODULES_DIR/$READINESS_MODULE" -luser32 || die "UI readiness helper build failed"
+        -o "$MODULES_DIR/$READINESS_MODULE" -luser32 -ladvapi32 || die "UI readiness helper build failed"
     codesign -s - -f "$MODULES_DIR/$NATIVE_MODULE" 2>/dev/null || die "Could not sign native GDI worker"
     codesign -s - -f "$MODULES_DIR/wineserver" 2>/dev/null || die "Could not sign the rebuilt wineserver"
     # The unstripped d3dx9 is 2.6 MB (the stock one is 0.6 MB); the other modules ship as built.

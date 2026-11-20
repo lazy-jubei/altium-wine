@@ -690,6 +690,48 @@ select_ad26_dxmt() {
     say "Using DXMT for Altium Designer 26"
 }
 
+configure_ad26_browser() {
+    [ "${AD26_CEF_FALLBACK:-1}" = "1" ] || return 0
+
+    local directory="${1#"$PREFIX"/drive_c/}" profile helper="$WINE_BIN_DIR/altium-ui-ready.exe"
+    directory="${directory%/*}"
+    # Match the selected executable to its installer record. Other versions and
+    # other installations in this prefix have separate preference keys.
+    profile="$(
+        WINEDEBUG=-all "$WINE" reg query 'HKLM\Software\Altium\Builds' /s /reg:64 2>/dev/null |
+            LC_ALL=C ALTIUM_INSTALL_PATH="C:\\${directory//\//\\}" awk '
+                function record() {
+                    if (profile ~ /^Altium Designer \{[[:xdigit:]-]+\}$/ &&
+                        tolower(installed) == "true" && version ~ /^26\./ && tolower(path) == expected) {
+                        match_count++
+                        selected = profile
+                    }
+                }
+                BEGIN { expected = tolower(ENVIRON["ALTIUM_INSTALL_PATH"]) }
+                { sub(/\r$/, "") }
+                /^HKEY_LOCAL_MACHINE\\/ {
+                    record()
+                    profile = $0
+                    sub(/^HKEY_LOCAL_MACHINE\\Software\\Altium\\Builds\\/, "", profile)
+                    installed = version = path = ""
+                    next
+                }
+                $1 == "Installed" && $2 == "REG_SZ" { installed = $3 }
+                $1 == "Version" && $2 == "REG_SZ" { version = $3 }
+                $1 == "ProgramsInstallPath" && $2 == "REG_SZ" {
+                    sub(/^[ \t]*ProgramsInstallPath[ \t]+REG_SZ[ \t]+/, "")
+                    path = $0
+                    sub(/\\$/, "", path)
+                }
+                END { record(); if (match_count == 1) print selected }
+            '
+    )"
+    [ -n "$profile" ] || return 0
+    [ -x "$helper" ] || helper="$TOOLS_DIR/altium-ui-ready.exe"
+    WINEDEBUG=-all "$WINE" "$helper" --seed-ad26-browser "$profile" </dev/null 2>/dev/null ||
+        warn "Couldn't set the browser default. To use CefSharp, turn off System.UseWebView2 in Altium's Advanced Settings."
+}
+
 cmd_run() {
     ensure_setup
     local exe wine_exe metal_init="" relative_exe
@@ -728,14 +770,13 @@ cmd_run() {
     # Match the sRGB GDI surfaces on both versions, including AD26's UI around its GPU canvas.
     case "$exe" in
         *X2.EXE|*x2.exe)
+            configure_ad26_browser "$exe"
             export ALTIUM_MAC_SRGB="${AD26_SRGB_WINDOWS:-1}"
             export ALTIUM_RESTORE_CLICKED_WINDOW_ORDER="${AD26_RESTORE_CLICKED_WINDOW_ORDER:-1}"
             export WINE_D2D_PRIMITIVE_CACHE="${AD26_D2D_PRIMITIVE_CACHE:-1}"
             export WINE_D2D_BATCH="${AD26_D2D_BATCH:-1}"
-            # AD26's Home page is CefSharp (Chromium), not WebView2. Its GPU process crashes
-            # under Wine, and Wine doesn't show a window that another process draws into, so
-            # Chromium's compositor runs in software inside X2.EXE. CEF reads these switches
-            # from X2.EXE's command line.
+            # CefSharp's GPU process crashes under Wine. Running its software
+            # compositor inside X2.EXE lets Wine display the embedded page.
             if [ "${AD26_CEF_SOFTWARE_RENDERING:-1}" = "1" ]; then
                 set -- --disable-gpu --disable-gpu-compositing --in-process-gpu "$@"
             fi ;;
@@ -791,8 +832,7 @@ cmd_run() {
     fi
 }
 
-# Altium's Microsoft Edge WebView2 browser (web panels; the Home Page is CefSharp, see
-# AD26_CEF_SOFTWARE_RENDERING) has a thread whose message loop spins forever under Wine and floods wineserver,
+# Some Altium WebView2 sessions have a thread that spins under Wine and floods wineserver,
 # which more than halves Altium's frame rate (PCB pan measured at ~50 fps with it, ~130 fps
 # without). Wait for the editor to respond and become idle before ending it: a fixed delay
 # can interrupt a large board's startup and cause "Invalid window handle". Blocking the

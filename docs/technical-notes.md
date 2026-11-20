@@ -55,6 +55,7 @@ Environment variables:
 | `PATCHED_MODULES_DIR` | Prebuilt `winemac.so`, `d2d1.dll` and `winhttp.dll` (+ `SHA256SUMS`) for the first `setup`, so no compiler is needed. |
 | `ALTIUM_WINEDEBUG` | `WINEDEBUG` channels for `run`. |
 | `KILL_WEBVIEW2=0` | Turns off the WebView2 watchdog. |
+| `AD26_CEF_FALLBACK=0` | Lets Altium 26 initialize its own browser preference for the selected installation. |
 | `AD26_CEF_SOFTWARE_RENDERING=0` | Lets AD26's Home Page browser try Chromium's GPU path (it crashes under Wine). |
 | `WINE_D2D_LAZY_STATE=0` | Turns off the Direct2D state-caching part of patch 0003. |
 
@@ -102,7 +103,7 @@ Verification:
 - **Retina:** `RetinaMode=y` plus 192 DPI (200%). Without it, Wine renders at half resolution and text is jagged.
 - **Fonts:** Segoe UI is mapped to Arial (from corefonts). The fallback font drew `-` as a box.
 - **WPF dialogs** had black areas. `Avalon.Graphics\DisableHWAcceleration=1` renders them in software.
-- **WebView2** (Altium's web panels; the Home Page is CefSharp, below): its GPU process dies under Wine. The `AdditionalBrowserArguments` policy for `X2.EXE` runs it without GPU and without Chromium's sandbox. Wine doesn't enforce the Windows primitives that sandbox relies on, so the sandbox can't work here anyway. It only loads Altium's own pages.
+- **WebView2** can fail to start its GPU process under Wine. The `AdditionalBrowserArguments` policy for `X2.EXE` applies to Altium features using WebView2. See the CefSharp fallback below for the AD26 Home Page.
 
 ### WebView2 watchdog
 
@@ -133,7 +134,11 @@ Wine patches `0030` and `0032` correct the underlying font metrics used by layou
 
 ### AD26 CefSharp Home Page
 
-AD26's Home Page is CefSharp (Chromium 126), not WebView2, so the WebView2 policy never reached it. Its GPU process started ANGLE on Direct3D 11, failed to create a GLES 3 context, crashed three times (exit code 0x80000003) and gave up, leaving a white block on black. `--disable-gpu --disable-gpu-compositing` stops the crashes, but the page stays blank: Chromium's compositor then runs in its GPU process and paints into a window owned by `X2.EXE`, and Wine's Mac driver doesn't show drawing from another process. `--in-process-gpu` runs the compositor inside `X2.EXE`, and the page renders. CEF reads these switches from `X2.EXE`'s command line, so `run` adds them (`AD26_CEF_SOFTWARE_RENDERING=0` opts out). PCB rendering is unchanged. The WebView2 watchdog is separate and still needed.
+On Altium 26.12.2, the Home Page can report `0x80070578` (Invalid window handle) with WebView2 enabled. The launcher initializes `System.UseWebView2` to off for an Altium 26 installation whose browser preference is unset. Altium then uses its bundled CefSharp browser. The launcher matches the selected executable's folder and version to the installer record and preserves any existing browser preference.
+
+If WebView2 was explicitly enabled, turn off `System.UseWebView2` under **Preferences → System → General → Advanced** and restart. To use WebView2, set `AD26_CEF_FALLBACK=0` in `config.local.sh`, enable the preference in Altium, and restart. `KILL_WEBVIEW2=0` keeps the WebView2 process running when testing it.
+
+CefSharp's GPU process failed to initialize ANGLE on Direct3D 11 under Wine. The launcher passes `--disable-gpu --disable-gpu-compositing --in-process-gpu` to render the browser in software inside `X2.EXE`. `AD26_CEF_SOFTWARE_RENDERING=0` opts out of those flags.
 
 ### AD17 CefSharp browser
 
@@ -385,7 +390,7 @@ The binary patchers check the exact bytes they patch and refuse any other Wine b
 
 - **AD17 viewport:** dense boards remain slow despite faster uploads; the remaining draw/command-stream work still limits frame rate.
 - **Geometry shaders:** MoltenVK has none, so DXVK can't compile Altium pipelines that use them ("Failed to compile pipeline" with a `gs` stage), and those draws are skipped. No missing graphics have been noticed so far.
-- **Home Page (AD18+):** blank, see WebView2 above. AD17's Home page and HTML reports render with its CefSharp software-rendering flags.
+- **Home Page:** AD26 uses the CefSharp fallback described above. AD17's Home page and HTML reports render with its CefSharp software-rendering flags.
 - **Stale clip:** a document view that stops presenting keeps its last clip until its window moves, resizes or changes z-order. Not seen in practice.
 - **Trampoline retry:** the wow64cpu trampoline retries the mode switch until it succeeds, so if Rosetta kept failing it the thread would spin instead of crashing. Not seen in testing.
 - **Untried:** 32-bit Windows apps other than the Altium installer.
