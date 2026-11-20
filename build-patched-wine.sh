@@ -65,7 +65,7 @@ sha256_of() { shasum -a 256 "$1" | awk '{print $1}'; }
 WINE_VER="11.16"
 WINE_SRC_URL="https://dl.winehq.org/wine/source/11.x/wine-$WINE_VER.tar.xz"
 WINE_SRC_SHA256="c66e2090343dcd727f7f7fd2f87ee0bfb0b118790c1d745ab7b8a4c3a4197f2f"
-SOURCE_PATCHES="0000-staging-winemac-no-flicker.patch 0002-winemac-clip-client-surfaces.patch 0003-d2d1-fast-redraw.patch 0037-d2d1-ordered-solid-batch.patch 0038-d2d1-text-aa-scaled.patch 0004-winhttp-infinite-receive-timeout.patch 0006-msado15-command-parameter-properties.patch 0007-winemac-activate-blocking-popup.patch 0008-d3dx9-staging-sync.patch 0009-d3dx9-effect-setrawvalue-struct-arrays.patch 0010-kernelbase-altiumms-pipe-write-event.patch 0011-kernelbase-staging-sync.patch 0012-winemac-separate-modal-owner.patch 0017-winemac-altium-panel-close-activation.patch 0020-winemac-altium-panel-queued-clicks.patch 0021-winemac-srgb-altium-windows.patch 0014-server-staging-sync.patch 0005-server-wakeup-epipe.patch 0013-server-signed-dpi-scaling.patch 0016-d3d9-staging-sync.patch 0015-d3d9-ad17-buffer-uploads.patch 0018-wined3d-staging-sync.patch 0019-d3d9-ring-upload-hints.patch 0022-wined3d-ad17-immediate-uploads.patch 0023-winemac-schematic-performance.patch 0029-winemac-main-thread-reentry.patch 0031-gdiplus-staging-sync.patch 0030-gdiplus-font-height-dpi.patch 0032-gdiplus-measure-string-height.patch 0033-winemac-accessibility-window.patch 0034-winemac-altium26-panel-close.patch 0035-winemac-altium-view-hide-activation.patch 0036-wined3d-vulkan-msaa-present.patch 0039-winemac-cross-screen-moves.patch 0040-winemac-zero-size-owner.patch 0042-dwrite-cache-scaled-glyphs.patch 0043-winemac-restore-clicked-window-order.patch"
+SOURCE_PATCHES="0000-staging-winemac-no-flicker.patch 0002-winemac-clip-client-surfaces.patch 0003-d2d1-fast-redraw.patch 0037-d2d1-ordered-solid-batch.patch 0038-d2d1-text-aa-scaled.patch 0004-winhttp-infinite-receive-timeout.patch 0006-msado15-command-parameter-properties.patch 0007-winemac-activate-blocking-popup.patch 0008-d3dx9-staging-sync.patch 0009-d3dx9-effect-setrawvalue-struct-arrays.patch 0010-kernelbase-altiumms-pipe-write-event.patch 0011-kernelbase-staging-sync.patch 0012-winemac-separate-modal-owner.patch 0017-winemac-altium-panel-close-activation.patch 0020-winemac-altium-panel-queued-clicks.patch 0021-winemac-srgb-altium-windows.patch 0014-server-staging-sync.patch 0005-server-wakeup-epipe.patch 0013-server-signed-dpi-scaling.patch 0016-d3d9-staging-sync.patch 0015-d3d9-ad17-buffer-uploads.patch 0018-wined3d-staging-sync.patch 0019-d3d9-ring-upload-hints.patch 0022-wined3d-ad17-immediate-uploads.patch 0023-winemac-schematic-performance.patch 0029-winemac-main-thread-reentry.patch 0031-gdiplus-staging-sync.patch 0030-gdiplus-font-height-dpi.patch 0032-gdiplus-measure-string-height.patch 0033-winemac-accessibility-window.patch 0034-winemac-altium26-panel-close.patch 0035-winemac-altium-view-hide-activation.patch 0036-wined3d-vulkan-msaa-present.patch 0039-winemac-cross-screen-moves.patch 0040-winemac-zero-size-owner.patch 0042-dwrite-cache-scaled-glyphs.patch 0043-winemac-restore-clicked-window-order.patch 0045-winemac-dxmt-client-surfaces.patch"
 # built file | place in the bundle (relative to lib/wine) | name in a modules directory
 TARGETS="dlls/winemac.drv/winemac.so|x86_64-unix/winemac.so|winemac.so
 dlls/d2d1/x86_64-windows/d2d1.dll|x86_64-windows/d2d1.dll|d2d1.dll
@@ -241,6 +241,28 @@ chmod 755 "$BINW/$READINESS_MODULE"
 chmod 755 "$BINW/wineserver" || die "Could not set wineserver permissions"
 codesign -s - -f "$BINW/wineserver" 2>/dev/null || die "Could not sign wineserver"
 
+# Keep DXMT's builtin DLLs in a separate copy so AD17 and DXVK keep the
+# normal Wine Direct3D modules. Both copies use the same wineserver build.
+if [ -d "$MODULES_DIR/dxmt" ]; then
+    . "$KIT_DIR/tools/dxmt-files.sh"
+    for module in $DXMT_FILES; do
+        [ -s "$MODULES_DIR/$module" ] || die "DXMT module missing: $module"
+    done
+    if [ "$(uname -m)" = x86_64 ] && [ "$(sysctl -in hw.optional.arm64)" != 1 ]; then
+        DXMT_APP="$NEW/dxmt/$(basename "$STOCK_APP")"
+        ditto "$DEST_APP" "$DXMT_APP" || die "Could not copy Wine for DXMT"
+        dxmt_wine="$DXMT_APP/Contents/Resources/wine"
+        dxmt_modules="$MODULES_DIR/dxmt"
+        cp "$dxmt_modules/"{d3d10core,d3d11,dxgi,winemetal}.dll "$dxmt_wine/lib/wine/x86_64-windows/" \
+            || die "Could not install DXMT Windows modules"
+        cp "$dxmt_modules/winemetal.so" "$dxmt_wine/lib/wine/x86_64-unix/" \
+            || die "Could not install the DXMT native module"
+        cp "$dxmt_modules/metal-init.dylib" "$dxmt_wine/bin/" || die "Could not install Metal initialization"
+        cp "$dxmt_modules/"{LICENSE,COPYING.LIB,LICENSE.OLD} "$NEW/dxmt/" || die "Could not install DXMT licenses"
+        say "Assembled the optional Intel DXMT runtime"
+    fi
+fi
+
 cp "$WINE_ROOT/VERSION" "$NEW/VERSION"
 {
     echo "built: $(date)"
@@ -252,6 +274,10 @@ cp "$WINE_ROOT/VERSION" "$NEW/VERSION"
         x86_64-windows/gdiplus.dll i386-windows/gdiplus.dll x86_64-windows/msado15.dll i386-windows/msado15.dll i386-windows/d3dx9_43.dll i386-windows/kernelbase.dll i386-windows/d3d9.dll i386-windows/wined3d.dll \
         x86_64-windows/wow64cpu.dll x86_64-windows/user32.dll ) | sed 's/^/  /'
     ( cd "$BINW" && shasum -a 256 wineserver "$NATIVE_MODULE" "$READINESS_MODULE" ) | sed 's/^/  /'
+    if [ -d "$MODULES_DIR/dxmt" ]; then
+        echo "DXMT package inputs (sha256):"
+        ( cd "$MODULES_DIR" && shasum -a 256 $DXMT_FILES ) | sed 's/^/  /'
+    fi
 } > "$NEW/PATCHES"
 
 # Replacing the bundle under a running Wine would mix old and new modules in one session.
@@ -265,7 +291,12 @@ if [ -d "$PATCHED_ROOT" ]; then
     rm -rf "$PATCHED_ROOT.old"
     mv "$PATCHED_ROOT" "$PATCHED_ROOT.old" || die "Couldn't move the old bundle aside"
 fi
-mv "$NEW" "$PATCHED_ROOT" || die "Couldn't move the new bundle into place"
+if ! mv "$NEW" "$PATCHED_ROOT"; then
+    if [ -d "$PATCHED_ROOT.old" ]; then
+        mv "$PATCHED_ROOT.old" "$PATCHED_ROOT" || warn "The previous bundle is in $PATCHED_ROOT.old"
+    fi
+    die "Couldn't move the new bundle into place"
+fi
 rm -rf "$PATCHED_ROOT.old"
 
 if [ -n "$EXPORT_DIR" ]; then

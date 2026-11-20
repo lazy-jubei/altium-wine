@@ -14,7 +14,7 @@
 # altium-wine-modules-VERSION.tar.gz, SHA256SUMS. Users then run:
 #   curl -fsSL BASE_URL/install.sh | bash
 
-set -eu
+set -euo pipefail
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="" URL="" MODULES="" OUT=""
@@ -37,7 +37,7 @@ for f in $MODULE_FILES; do
 done
 ( cd "$MODULES" && shasum -a 256 -c SHA256SUMS >/dev/null ) || { echo "Checksums in $MODULES don't match" >&2; exit 1; }
 
-rm -rf "$OUT"; mkdir -p "$OUT"
+mkdir -p "$OUT"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
@@ -55,6 +55,18 @@ COPYFILE_DISABLE=1 tar -czf "$OUT/$KIT_TGZ" -C "$STAGE" kit
 # Patched Wine modules (LGPL; the patches that produce them are in the kit).
 mkdir -p "$STAGE/modules"
 for f in $MODULE_FILES; do cp "$MODULES/$f" "$STAGE/modules/"; done
+if [ -d "$MODULES/dxmt" ]; then
+    . "$KIT_DIR/tools/dxmt-files.sh"
+    mkdir "$STAGE/modules/dxmt"
+    for module in $DXMT_FILES; do
+        [ -s "$MODULES/$module" ] || { echo "DXMT module missing: $module" >&2; exit 1; }
+        cp "$MODULES/$module" "$STAGE/modules/$module"
+    done
+else
+    DXMT_FILES=""
+fi
+# Write a manifest for the exact files distributed in this archive.
+( cd "$STAGE/modules" && shasum -a 256 ${MODULE_FILES% SHA256SUMS} $DXMT_FILES > SHA256SUMS )
 [ -f "$MODULES/PATCHES" ] && cp "$MODULES/PATCHES" "$STAGE/modules/"
 cp "$KIT_DIR/LICENSE" "$KIT_DIR/NOTICE" "$STAGE/modules/"
 cp "$KIT_DIR/docs/wine-sources.md" "$STAGE/modules/"

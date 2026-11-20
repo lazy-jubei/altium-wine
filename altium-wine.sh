@@ -136,6 +136,11 @@ select_wine() {  # sets WINE_APP / WINE / WINESERVER; returns 1 if nothing insta
     else
         app="$(find_wine_app "$WINE_ROOT")" || return 1
     fi
+    use_wine_app "$app"
+}
+
+use_wine_app() {
+    local app="$1"
     WINE_APP="$app"
     WINE_BIN_DIR="$app/Contents/Resources/wine/bin"
     WINE="$WINE_BIN_DIR/wine"
@@ -557,7 +562,13 @@ launch_logged() {  # launch_logged LABEL WORKDIR EXE [ARGS...]
 
     INTERRUPTED=0
     trap 'INTERRUPTED=1' INT
-    ( cd "$workdir" && exec "$WINE" "$@" ) >> "$log" 2>&1 &
+    (
+        cd "$workdir" || exit 1
+        if [ -n "${metal_init:-}" ]; then
+            export DYLD_INSERT_LIBRARIES="$metal_init${DYLD_INSERT_LIBRARIES:+:$DYLD_INSERT_LIBRARIES}"
+        fi
+        exec "$WINE" "$@"
+    ) >> "$log" 2>&1 &
     local pid=$!
     local n=0
     while kill -0 "$pid" 2>/dev/null; do
@@ -647,12 +658,57 @@ find_altium_exe() {
     echo "$exe"
 }
 
+select_ad26_dxmt() {
+    local app source destination temporary
+    [ "$(uname -m)" = x86_64 ] && [ "$(sysctl -in hw.optional.arm64)" != 1 ] \
+        || die "The packaged AD26 DXMT renderer requires an Intel Mac."
+    app="$(find_wine_app "$PATCHED_ROOT/dxmt")" \
+        || die "The DXMT runtime is missing. Install a release with DXMT modules or set AD26_RENDERER=dxvk."
+    local bin="$app/Contents/Resources/wine/bin"
+    source="$bin/../lib/wine/x86_64-windows/winemetal.dll"
+    metal_init="$bin/metal-init.dylib"
+    [ -s "$source" ] && [ -s "$metal_init" ] || die "The DXMT runtime is incomplete."
+
+    # DXMT's PE module uses the Wine builtin loader and must exist in system32.
+    destination="$PREFIX/drive_c/windows/system32/winemetal.dll"
+    if ! cmp -s "$source" "$destination"; then
+        [ ! -e "$destination" ] && [ ! -L "$destination" ] \
+            || die "The prefix already has a different winemetal.dll. Select DXVK or remove that DLL before trying DXMT."
+        temporary="$(mktemp "$destination.XXXXXXXX")" || die "Couldn't stage winemetal.dll"
+        if ! install -m 644 "$source" "$temporary"; then
+            rm -f "$temporary"
+            die "Couldn't copy winemetal.dll"
+        fi
+        mv -n "$temporary" "$destination"
+        rm -f "$temporary"
+        cmp -s "$source" "$destination" || die "Couldn't install winemetal.dll"
+    fi
+
+    use_wine_app "$app"
+    EXTRA_DLLOVERRIDES="${EXTRA_DLLOVERRIDES:+$EXTRA_DLLOVERRIDES;}d3d11,d3d10core,dxgi,winemetal=b"
+    export DXMT_SHADER_CACHE=0
+    say "Using DXMT for Altium Designer 26"
+}
+
 cmd_run() {
     ensure_setup
-    local exe
+    local exe wine_exe metal_init="" relative_exe
     exe="$(find_altium_exe)"
     [ -n "$exe" ] || die "No Altium (X2.EXE or DXP.EXE) under C:\\Program Files yet. Install first."
-    install_dxvk "$(dirname "$exe")"
+    wine_exe="${exe##*/}"
+    case "$wine_exe" in
+        X2.EXE|x2.exe)
+            case "${AD26_RENDERER:-dxvk}" in
+                dxvk) install_dxvk "$(dirname "$exe")" ;;
+                dxmt)
+                    select_ad26_dxmt
+                    relative_exe="${exe#"$PREFIX/drive_c/"}"
+                    wine_exe="C:\\${relative_exe//\//\\}"
+                    ;;
+                *) die "Unknown AD26_RENDERER: $AD26_RENDERER" ;;
+            esac
+            ;;
+    esac
     case "$exe" in *DXP.EXE|*dxp.exe)
         grep -qw dotnet48 "$PREFIX/.altium-kit-deps" 2>/dev/null \
             || warn "Altium 17's .NET extensions need .NET 4.8: bash \"$KIT_DIR/altium-wine.sh\" deps dotnet48"
@@ -729,9 +785,9 @@ cmd_run() {
         fi
     done
     if [ "${#windows_args[@]}" -eq 0 ]; then
-        launch_logged altium "$(dirname "$exe")" "$(basename "$exe")"
+        launch_logged altium "$(dirname "$exe")" "$wine_exe"
     else
-        launch_logged altium "$(dirname "$exe")" "$(basename "$exe")" "${windows_args[@]}"
+        launch_logged altium "$(dirname "$exe")" "$wine_exe" "${windows_args[@]}"
     fi
 }
 

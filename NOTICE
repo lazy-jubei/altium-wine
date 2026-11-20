@@ -56,3 +56,9 @@ GNU LGPL 2.1 or later.
 patches/0031-gdiplus-staging-sync.patch
 Wine Staging's two GDI+ image-scaling performance patches by Dmitry Timoshkov,
 retained with their original author and commit metadata. GNU LGPL 2.1 or later.
+
+DXMT
+Copyright (c) 2023-2026 Feifan He for CodeWeavers and DXMT contributors.
+The optional DXMT components include the upstream LICENSE, LICENSE.OLD and
+COPYING.LIB files. Source inputs and local modifications are documented in
+docs/wine-sources.md.

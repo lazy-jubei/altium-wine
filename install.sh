@@ -234,7 +234,10 @@ Everything else runs on its own. You need your own Altium license." 'Start' 'Wel
         fi
     fi
     if [ "$root" != "$HOME/AltiumWine" ]; then
-        printf '# Written by install.sh: where this kit keeps Wine, the prefix and downloads.\nWORK_ROOT=%q\n' "$root" > "$kit/config.local.sh"
+        # Preserve user settings on upgrades, including the selected renderer.
+        if [ ! -f "$kit/config.local.sh" ] || ! grep -q '^WORK_ROOT=' "$kit/config.local.sh"; then
+            printf '\n# Wine and prefix location written by install.sh.\nWORK_ROOT=%q\n' "$root" >> "$kit/config.local.sh"
+        fi
     fi
 
     local aw="$kit/altium-wine.sh"

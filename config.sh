@@ -73,6 +73,8 @@ AD26_RESTORE_CLICKED_WINDOW_ORDER="${AD26_RESTORE_CLICKED_WINDOW_ORDER:-1}"
 AD26_CEF_SOFTWARE_RENDERING="${AD26_CEF_SOFTWARE_RENDERING:-1}"
 
 # Reuse primitive geometry and batch solid Direct2D draws in source order.
+# The release includes an optional DXMT renderer for Altium 26 on Intel Macs.
+AD26_RENDERER="${AD26_RENDERER:-dxvk}"
 AD26_D2D_PRIMITIVE_CACHE="${AD26_D2D_PRIMITIVE_CACHE:-1}"
 AD26_D2D_BATCH="${AD26_D2D_BATCH:-1}"
 

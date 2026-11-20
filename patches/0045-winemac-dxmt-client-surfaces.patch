@@ -1,0 +1,268 @@
+Subject: winemac: track DXMT Metal views with Wine 11.16 window visibility
+
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -36,6 +36,7 @@
+ 
+ #include "macdrv.h"
+ #include "wine/server.h"
++#include "wine/list.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(macdrv);
+ 
+@@ -1154,6 +1155,7 @@
+     HDC hdc;
+ 
+     *ret_rects = NULL;
++    if (!NtUserIsWindowVisible(hwnd)) return 0;
+     OffsetRect(&full, -full.left, -full.top);
+ 
+     /* The Cocoa view is above every sibling, so always clip siblings that are above the window
+@@ -1314,22 +1316,156 @@
+ {
+     struct macdrv_client_surface *surface;
+ 
+-    surface = client_surface_create(sizeof(*surface), &macdrv_client_surface_funcs, hwnd, pixel_format);
++    if (!(surface = client_surface_create(sizeof(*surface), &macdrv_client_surface_funcs, hwnd, pixel_format)))
++        return NULL;
+     surface->cocoa_view = macdrv_create_view(cgrect_from_rect(surface->client.monitor_rect));
+-    macdrv_set_view_hidden(surface->cocoa_view, TRUE);
+-
+-    if (surface)
++    if (!surface->cocoa_view)
+     {
+-        surface->hidden = 1;
+-        surface->clip_count = -1;
+-        surface->clip_rects = NULL;
+-        macdrv_client_surface_update(&surface->client);
+-        macdrv_client_surface_present(&surface->client, 0);
++        client_surface_release(&surface->client);
++        return NULL;
+     }
++
++    macdrv_set_view_hidden(surface->cocoa_view, TRUE);
++    surface->hidden = 1;
++    surface->clip_count = -1;
++    macdrv_client_surface_update(&surface->client);
++    macdrv_client_surface_present(&surface->client, 0);
+ 
+     return &surface->client;
++}
++
++/* DXMT expects the pre-11.16 Mac driver's window-data layout. Expose a
++ * compatibility handle with the old prefix and own a modern client surface
++ * for the lifetime of each DXMT view. The handle is opaque to winemetal. */
++struct dxmt_view_handle
++{
++    HWND hwnd;
++    macdrv_window cocoa_window;
++    macdrv_view cocoa_view;
++    macdrv_view client_token;
++    struct client_surface *surface;
++    macdrv_metal_view metal_view;
++    struct list entry;
++};
++
++static struct dxmt_view_handle dxmt_empty_view;
++static pthread_mutex_t dxmt_views_lock = PTHREAD_MUTEX_INITIALIZER;
++static struct list dxmt_views = LIST_INIT(dxmt_views);
++
++/* Legacy DXMT surfaces are created outside win32u's client-surface set.
++ * Refresh their child clips after Windows changes visibility or stacking. */
++static void dxmt_update_child_clips(HWND hwnd)
++{
++    struct dxmt_view_handle *view;
++    HWND root;
++
++    pthread_mutex_lock(&dxmt_views_lock);
++    if (!list_empty(&dxmt_views) && (root = NtUserGetAncestor(hwnd, GA_ROOT)))
++    {
++        LIST_FOR_EACH_ENTRY(view, &dxmt_views, struct dxmt_view_handle, entry)
++        {
++            if (view->hwnd == root || NtUserGetAncestor(view->hwnd, GA_ROOT) != root) continue;
++            client_surface_sync_child(impl_from_client_surface(view->surface));
++        }
++    }
++    pthread_mutex_unlock(&dxmt_views_lock);
+ }
+ 
++static struct dxmt_view_handle *dxmt_get_win_data(HWND hwnd)
++{
++    struct dxmt_view_handle *view = calloc(1, sizeof(*view));
++
++    if (!view) return &dxmt_empty_view;
++    view->hwnd = hwnd;
++    view->client_token = (macdrv_view)view;
++    return view;
++}
++
++static void dxmt_release_win_data(struct dxmt_view_handle *view)
++{
++    if (view != &dxmt_empty_view && !view->metal_view)
++    {
++        if (view->surface) client_surface_release(view->surface);
++        free(view);
++    }
++}
++
++/* DXMT presents through CAMetalLayer instead of the driver present callback.
++ * When two swapchains share an HWND, activate the one drawing the new frame. */
++static void dxmt_activate_surface(void *context)
++{
++    struct client_surface *client = context;
++    struct macdrv_client_surface *surface = impl_from_client_surface(client);
++    struct macdrv_win_data *data = get_win_data(client->hwnd);
++    BOOL current;
++
++    if (!data) return;
++    current = data->client_view == surface->cocoa_view;
++    release_win_data(data);
++    if (!current) macdrv_client_surface_present(client, 0);
++}
++
++static macdrv_metal_view dxmt_create_metal_view(macdrv_view token, macdrv_metal_device device)
++{
++    struct dxmt_view_handle *view = (struct dxmt_view_handle *)token;
++    struct macdrv_client_surface *surface;
++
++    if (!view || !view->hwnd || !NtUserIsWindow(view->hwnd)) return NULL;
++    if (!(view->surface = macdrv_CreateClientSurface(view->hwnd, 0))) return NULL;
++    surface = impl_from_client_surface(view->surface);
++    view->metal_view = macdrv_view_create_metal_view(surface->cocoa_view, device);
++    if (!view->metal_view) return NULL;
++    pthread_mutex_lock(&dxmt_views_lock);
++    list_add_tail(&dxmt_views, &view->entry);
++    pthread_mutex_unlock(&dxmt_views_lock);
++    macdrv_view_set_drawable_callback(view->metal_view, dxmt_activate_surface, view->surface);
++    return (macdrv_metal_view)view;
++}
++
++static macdrv_metal_layer dxmt_get_metal_layer(macdrv_metal_view handle)
++{
++    struct dxmt_view_handle *view = (struct dxmt_view_handle *)handle;
++    return macdrv_view_get_metal_layer(view->metal_view);
++}
++
++static void dxmt_release_metal_view(macdrv_metal_view handle)
++{
++    struct dxmt_view_handle *view = (struct dxmt_view_handle *)handle;
++
++    if (!view) return;
++    pthread_mutex_lock(&dxmt_views_lock);
++    list_remove(&view->entry);
++    pthread_mutex_unlock(&dxmt_views_lock);
++    macdrv_view_set_drawable_callback(view->metal_view, NULL, NULL);
++    macdrv_view_release_metal_view(view->metal_view);
++    view->metal_view = NULL;
++    dxmt_release_win_data(view);
++}
++
++/* Legacy DXMT symbol table. Unused entries retain their positions in the ABI. */
++const struct
++{
++    void *init_display_devices;
++    struct dxmt_view_handle *(*get_win_data)(HWND);
++    void (*release_win_data)(struct dxmt_view_handle *);
++    void *get_cocoa_window;
++    macdrv_metal_device (*create_metal_device)(void);
++    void (*release_metal_device)(macdrv_metal_device);
++    macdrv_metal_view (*create_metal_view)(macdrv_view, macdrv_metal_device);
++    macdrv_metal_layer (*get_metal_layer)(macdrv_metal_view);
++    void (*release_metal_view)(macdrv_metal_view);
++    void *on_main_thread;
++} macdrv_functions __attribute__((visibility("default"))) =
++{
++    .get_win_data = dxmt_get_win_data,
++    .release_win_data = dxmt_release_win_data,
++    .create_metal_device = macdrv_create_metal_device,
++    .release_metal_device = macdrv_release_metal_device,
++    .create_metal_view = dxmt_create_metal_view,
++    .get_metal_layer = dxmt_get_metal_layer,
++    .release_metal_view = dxmt_release_metal_view,
++};
++
+ BOOL macdrv_client_surface_acquire_metal_swapchain(struct macdrv_client_surface *surface)
+ {
+     HWND hwnd = surface->client.hwnd;
+@@ -1859,6 +1995,11 @@
+     struct macdrv_win_data *data;
+     unsigned int new_style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
+     struct window_rects old_rects;
++
++    if ((swp_flags & (SWP_SHOWWINDOW | SWP_HIDEWINDOW)) ||
++        (swp_flags & (SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER)) !=
++            (SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER))
++        dxmt_update_child_clips(hwnd);
+ 
+     if (!(data = get_win_data(hwnd))) return;
+ 
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -545,6 +545,7 @@
+ extern void macdrv_release_metal_device(macdrv_metal_device d);
+ extern macdrv_metal_view macdrv_view_create_metal_view(macdrv_view v, macdrv_metal_device d);
+ extern macdrv_metal_layer macdrv_view_get_metal_layer(macdrv_metal_view v);
++extern void macdrv_view_set_drawable_callback(macdrv_metal_view v, void (*callback)(void *), void *context);
+ extern void macdrv_view_release_metal_view(macdrv_metal_view v);
+ extern macdrv_metal_swapchain macdrv_create_view_swapchain(macdrv_view v);
+ extern macdrv_metal_swapchain macdrv_create_offscreen_swapchain(void* hwnd, CGRect bounds);
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -1008,10 +1008,29 @@
+     {
+         return [[self window] level];
+     }
++
++@end
++
+ 
++@interface WineMetalLayer : CAMetalLayer
++{
++@public
++    void (*drawable_callback)(void *);
++    void *drawable_context;
++}
+ @end
+ 
++@implementation WineMetalLayer
+ 
++- (id<CAMetalDrawable>) nextDrawable
++{
++    if (drawable_callback) drawable_callback(drawable_context);
++    return [super nextDrawable];
++}
++
++@end
++
++
+ @implementation WineMetalView
+ 
+     - (id) initWithFrame:(NSRect)frame device:(id<MTLDevice>)device
+@@ -1040,7 +1059,7 @@
+ 
+     - (CALayer*) makeBackingLayer
+     {
+-        CAMetalLayer *layer = [CAMetalLayer layer];
++        CAMetalLayer *layer = [WineMetalLayer layer];
+         layer.device = _device;
+         layer.framebufferOnly = YES;
+         layer.magnificationFilter = kCAFilterNearest;
+@@ -4101,6 +4120,18 @@
+     });
+ 
+     return (macdrv_metal_layer)layer;
++}
++
++void macdrv_view_set_drawable_callback(macdrv_metal_view v, void (*callback)(void *), void *context)
++{
++    WineMetalView *view = (WineMetalView *)v;
++
++    OnMainThread(^{
++        WineMetalLayer *layer = (WineMetalLayer *)view.layer;
++        if (!layer) return;
++        layer->drawable_context = context;
++        layer->drawable_callback = callback;
++    });
+ }
+ 
+ void macdrv_view_release_metal_view(macdrv_metal_view v)

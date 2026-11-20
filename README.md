@@ -51,6 +51,16 @@ Wine and Altium live in `~/AltiumWine`. Re-run `install.sh` to update.
 
 [Setup and sign-in guide](docs/setup.md) · [Patch details and troubleshooting](docs/technical-notes.md)
 
+## Optional Metal renderer for Altium 26
+
+On an Intel Mac, the release installs a DXMT renderer alongside the default DXVK
+runtime. Set `AD26_RENDERER=dxmt` in the kit's `config.local.sh` and restart Altium to
+try it. Set `AD26_RENDERER=dxvk` to switch back.
+
+The DXMT path restores exposed copper in 3D and supports the 2D PCB grid and
+schematic rendering. It was tested on Altium 26.12.2 with an AMD Radeon RX 6900 XT
+on macOS 15.8.2. The renderer is experimental.
+
 ## Screenshots
 
 **PCB View**

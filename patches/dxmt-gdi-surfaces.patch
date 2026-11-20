@@ -1,0 +1,317 @@
+Subject: DXMT: preserve GDI-compatible swap chain surfaces for Direct2D
+
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -190,7 +190,8 @@
+       .Usage = D3D11_USAGE_DEFAULT,
+       .BindFlags = D3D11_BIND_RENDER_TARGET,
+       .CPUAccessFlags = {},
+-      .MiscFlags = {},
++      .MiscFlags = (desc_.Flags & DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE)
++                       ? UINT(D3D11_RESOURCE_MISC_GDI_COMPATIBLE) : 0,
+       .TextureLayout = {},
+     };
+     
+--- a/src/d3d11/d3d11_surface.hpp
++++ b/src/d3d11/d3d11_surface.hpp
+@@ -1,15 +1,19 @@
+ #pragma once
+ #include "d3d11_device.hpp"
++#include <atomic>
++#include <mutex>
+ 
+ namespace dxmt {
+ 
+-class D3D11DXGISurface : public IDXGISurface2 {
++class D3D11DXGISurface final : public IDXGISurface2 {
+ 
+ public:
+   D3D11DXGISurface(ID3D11Resource *pResource);
+ 
+   D3D11DXGISurface(ID3D11Resource *pParentResource, UINT Subresource);
+ 
++  ~D3D11DXGISurface();
++
+   ULONG STDMETHODCALLTYPE AddRef();
+ 
+   ULONG STDMETHODCALLTYPE Release();
+@@ -39,9 +43,17 @@
+   HRESULT STDMETHODCALLTYPE GetResource(REFIID riid, void **ppParentResource, UINT *pSubresourceIndex);
+ 
+ private:
++  void DestroyDC();
++
+   ID3D11Resource *resource_;
+   UINT subresource_;
+   bool surface_from_subresource_;
++  std::atomic<ULONG> subresource_refs_{0};
++  std::mutex gdi_mutex_;
++  HDC gdi_dc_ = nullptr;
++  HBITMAP gdi_bitmap_ = nullptr;
++  HGDIOBJ gdi_old_bitmap_ = nullptr;
++  void *gdi_pixels_ = nullptr;
+ };
+ 
+ } // namespace dxmt
+\ No newline at end of file
+--- a/src/d3d11/d3d11_surface.cpp
++++ b/src/d3d11/d3d11_surface.cpp
+@@ -18,6 +18,7 @@
+ #include "d3d11_surface.hpp"
+ #include "com/com_object.hpp"
+ #include "d3d11_resource.hpp"
++#include <cstring>
+ 
+ namespace dxmt {
+ 
+@@ -29,16 +30,25 @@
+ D3D11DXGISurface::D3D11DXGISurface(ID3D11Resource *pParentResource, UINT Subresource) :
+     resource_(pParentResource),
+     subresource_(Subresource),
+-    surface_from_subresource_(true) {}
++    surface_from_subresource_(true) {
++  resource_->AddRef();
++}
+ 
+ ULONG STDMETHODCALLTYPE
+ D3D11DXGISurface::AddRef() {
++  if (surface_from_subresource_)
++    return ++subresource_refs_;
+   return resource_->AddRef();
+ }
+ 
+ ULONG STDMETHODCALLTYPE
+ D3D11DXGISurface::Release() {
+-  return resource_->Release();
++  if (!surface_from_subresource_)
++    return resource_->Release();
++  ULONG refs = --subresource_refs_;
++  if (!refs)
++    delete this;
++  return refs;
+ }
+ 
+ HRESULT STDMETHODCALLTYPE
+@@ -181,10 +191,10 @@
+   resource_->GetDevice(&device);
+   device->GetImmediateContext(&context);
+ 
+-  if (pLockedRect) {
+-    pLockedRect->Pitch = 0;
+-    pLockedRect->pBits = nullptr;
+-  }
++  if (!pLockedRect)
++    return DXGI_ERROR_INVALID_CALL;
++  pLockedRect->Pitch = 0;
++  pLockedRect->pBits = nullptr;
+ 
+   D3D11_MAP map_type;
+ 
+@@ -200,7 +210,7 @@
+     return DXGI_ERROR_INVALID_CALL;
+ 
+   D3D11_MAPPED_SUBRESOURCE sr;
+-  HRESULT hr = context->Map(resource_, subresource_, map_type, 0, pLockedRect ? &sr : nullptr);
++  HRESULT hr = context->Map(resource_, subresource_, map_type, 0, &sr);
+ 
+   if (hr != S_OK)
+     return hr;
+@@ -222,23 +232,148 @@
+   return S_OK;
+ }
+ 
++D3D11DXGISurface::~D3D11DXGISurface() {
++  DestroyDC();
++  if (surface_from_subresource_)
++    resource_->Release();
++}
++
++void
++D3D11DXGISurface::DestroyDC() {
++  if (gdi_old_bitmap_ && gdi_old_bitmap_ != HGDI_ERROR)
++    SelectObject(gdi_dc_, gdi_old_bitmap_);
++  if (gdi_dc_)
++    DeleteDC(gdi_dc_);
++  if (gdi_bitmap_)
++    DeleteObject(gdi_bitmap_);
++
++  gdi_dc_ = nullptr;
++  gdi_bitmap_ = nullptr;
++  gdi_old_bitmap_ = nullptr;
++  gdi_pixels_ = nullptr;
++}
++
+ HRESULT STDMETHODCALLTYPE
+ D3D11DXGISurface::GetDC(BOOL Discard, HDC *phdc) {
+-  // TODO(gdi-surface)
+-  return DXGI_ERROR_INVALID_CALL;
++  if (!phdc)
++    return DXGI_ERROR_INVALID_CALL;
++  *phdc = nullptr;
++
++  std::lock_guard lock(gdi_mutex_);
++  if (gdi_dc_)
++    return DXGI_ERROR_INVALID_CALL;
++
++  D3D11_RESOURCE_DIMENSION dimension;
++  resource_->GetType(&dimension);
++  if (dimension != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
++    return DXGI_ERROR_INVALID_CALL;
++
++  D3D11_TEXTURE2D_DESC desc;
++  GetResourceCommon(resource_)->GetDesc(&desc);
++  if (!(desc.MiscFlags & D3D11_RESOURCE_MISC_GDI_COMPATIBLE) ||
++      desc.SampleDesc.Count != 1 ||
++      (desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM &&
++       desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM_SRGB &&
++       desc.Format != DXGI_FORMAT_B8G8R8A8_TYPELESS))
++    return DXGI_ERROR_INVALID_CALL;
++
++  DXGI_SURFACE_DESC surface_desc;
++  if (FAILED(GetDesc(&surface_desc)))
++    return DXGI_ERROR_INVALID_CALL;
++
++  BITMAPINFO info = {};
++  info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
++  info.bmiHeader.biWidth = LONG(surface_desc.Width);
++  info.bmiHeader.biHeight = -LONG(surface_desc.Height);
++  info.bmiHeader.biPlanes = 1;
++  info.bmiHeader.biBitCount = 32;
++  info.bmiHeader.biCompression = BI_RGB;
++  gdi_dc_ = CreateCompatibleDC(nullptr);
++  if (gdi_dc_)
++    gdi_bitmap_ = CreateDIBSection(gdi_dc_, &info, DIB_RGB_COLORS, &gdi_pixels_, nullptr, 0);
++  if (gdi_bitmap_)
++    gdi_old_bitmap_ = SelectObject(gdi_dc_, gdi_bitmap_);
++  if (!gdi_old_bitmap_ || gdi_old_bitmap_ == HGDI_ERROR) {
++    DestroyDC();
++    return E_OUTOFMEMORY;
++  }
++
++  if (!Discard) {
++    Com<ID3D11Device> device;
++    Com<ID3D11DeviceContext> context;
++    Com<ID3D11Texture2D> staging;
++    resource_->GetDevice(&device);
++    device->GetImmediateContext(&context);
++
++    desc.Width = surface_desc.Width;
++    desc.Height = surface_desc.Height;
++    desc.MipLevels = 1;
++    desc.ArraySize = 1;
++    const UINT row_size = desc.Width * 4;
++    desc.Usage = D3D11_USAGE_STAGING;
++    desc.BindFlags = 0;
++    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
++    desc.MiscFlags = 0;
++    HRESULT hr = device->CreateTexture2D(&desc, nullptr, &staging);
++    if (SUCCEEDED(hr)) {
++      context->CopySubresourceRegion(staging.ptr(), 0, 0, 0, 0, resource_, subresource_, nullptr);
++      D3D11_MAPPED_SUBRESOURCE mapped;
++      hr = context->Map(staging.ptr(), 0, D3D11_MAP_READ, 0, &mapped);
++      if (SUCCEEDED(hr)) {
++        auto pixels = static_cast<unsigned char *>(gdi_pixels_);
++        auto source = static_cast<const unsigned char *>(mapped.pData);
++        for (UINT y = 0; y < desc.Height; ++y)
++          std::memcpy(pixels + size_t(y) * row_size, source + size_t(y) * mapped.RowPitch, row_size);
++        context->Unmap(staging.ptr(), 0);
++      }
++    }
++    if (FAILED(hr)) {
++      DestroyDC();
++      return hr;
++    }
++  }
++
++  *phdc = gdi_dc_;
++  return S_OK;
+ }
+ 
+ HRESULT STDMETHODCALLTYPE
+ D3D11DXGISurface::ReleaseDC(RECT *pDirtyRect) {
+-  // TODO(gdi-surface)
+-  return DXGI_ERROR_INVALID_CALL;
++  std::lock_guard lock(gdi_mutex_);
++  if (!gdi_dc_)
++    return DXGI_ERROR_INVALID_CALL;
++
++  DXGI_SURFACE_DESC desc;
++  GetDesc(&desc);
++  RECT bounds = {0, 0, LONG(desc.Width), LONG(desc.Height)};
++  RECT dirty = bounds;
++  if (pDirtyRect)
++    IntersectRect(&dirty, &bounds, pDirtyRect);
++
++  GdiFlush();
++  if (!IsRectEmpty(&dirty)) {
++    Com<ID3D11Device> device;
++    Com<ID3D11DeviceContext> context;
++    resource_->GetDevice(&device);
++    device->GetImmediateContext(&context);
++
++    const UINT row_size = desc.Width * 4;
++    auto pixels = static_cast<const unsigned char *>(gdi_pixels_);
++    const D3D11_BOX box = {UINT(dirty.left), UINT(dirty.top), 0, UINT(dirty.right), UINT(dirty.bottom), 1};
++    context->UpdateSubresource(resource_, subresource_, &box,
++                               pixels + size_t(dirty.top) * row_size + dirty.left * 4,
++                               row_size, 0);
++  }
++
++  DestroyDC();
++  return S_OK;
+ }
+ 
+ HRESULT STDMETHODCALLTYPE
+ D3D11DXGISurface::GetResource(REFIID riid, void **ppParentResource, UINT *pSubresourceIndex) {
+   HRESULT hr;
+ 
+-  if (!ppParentResource)
++  if (!ppParentResource || !pSubresourceIndex)
+     return E_POINTER;
+ 
+   InitReturnPtr(ppParentResource);
+--- a/src/d3d11/d3d11_texture_device.cpp
++++ b/src/d3d11/d3d11_texture_device.cpp
+@@ -26,6 +26,7 @@
+ #include "dxmt_texture.hpp"
+ #include "d3d11_resource.hpp"
+ #include "util_win32_compat.h"
++#include <new>
+ 
+ namespace dxmt {
+ 
+@@ -33,6 +34,24 @@
+ 
+ template <typename tag_texture>
+ class DeviceTexture : public TResourceBase<tag_texture, IMTLMinLODClampable> {
++public:
++  HRESULT CreateSubresourceSurface(UINT index, IDXGISurface2 **surface) override {
++    if constexpr (std::is_same_v<typename tag_texture::DESC1, D3D11_TEXTURE2D_DESC1>) {
++      if (!surface)
++        return E_POINTER;
++      *surface = nullptr;
++      if (index >= this->desc.MipLevels * this->desc.ArraySize)
++        return E_INVALIDARG;
++
++      auto view = new (std::nothrow) D3D11DXGISurface(this, index);
++      if (!view)
++        return E_OUTOFMEMORY;
++      *surface = ref(view);
++      return S_OK;
++    }
++    return DXGI_ERROR_INVALID_CALL;
++  }
++
+ private:
+   Rc<RenamableTexturePool> renamable_;
+   float min_lod = 0.0;
+--- a/src/d3d11/meson.build
++++ b/src/d3d11/meson.build
+@@ -45,6 +45,7 @@
+ d3d11_dll = shared_library('d3d11', d3d11_src, d3d10_src, d3d11_res,
+   name_prefix         : '',
+   dependencies        : [ 
++    cpp.find_library('gdi32'),
+     dxgi_dep, 
+     dxbc_parser_dep,
+     airconv_forward_dep,

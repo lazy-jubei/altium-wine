@@ -49,7 +49,9 @@ The stock `dwrite.so` handles the FreeType calls.
 `0043` brings the clicked Altium document forward at its existing window level
 when it remains active and another app covers it. Set `AD26_RESTORE_CLICKED_WINDOW_ORDER=0`
 in `config.local.sh` to disable the check.
-The 64-bit Direct3D modules keep the stock renderer.
+The standard Wine runtime keeps its stock 64-bit Direct3D modules. Patch `0045`
+adds the DXMT window and surface bridge to the Mac driver. The optional Intel
+runtime uses the same driver, wineserver and stock Win32u module.
 `wow64cpu.dll` and `user32.dll` are transformed from the checksum-pinned stock
 bundle by two Python patchers in `patches/`. The server is compiled from source. No other stock modules are
 distributed in this repository's module archive.
@@ -88,3 +90,33 @@ export contains seventeen modules, all listed in `SHA256SUMS`. The original
 Win32u, FreeType and Vulkan modules remain installed. Native copies defer
 while the compositor preview is active. `AD17_NATIVE_GDI=0` and
 `AD17_SMOOTH_SCHEMATIC_PAN=0` disable the respective paths before launching.
+
+## Optional DXMT module sources
+
+The x86-64 DXMT modules are based on [DXMT commit
+`0df86108348bab2aaa5c4610a5eb63a9de9047ac`](https://github.com/3Shain/dxmt/tree/0df86108348bab2aaa5c4610a5eb63a9de9047ac)
+and its [upstream CI build](https://github.com/3Shain/dxmt/actions/runs/42785253423).
+The release includes the exact DXMT source archive and the required
+[DirectX headers](https://github.com/misyltoad/mingw-directx-headers/tree/9df86f2341616ef1888ae59919feaa6d4fad693d).
+DXMT's license files are included with the modules. The CI workflow in the
+source archive pins its LLVM and MinGW build inputs.
+
+`patches/dxmt-gdi-surfaces.patch` preserves the GDI-compatible swap-chain
+backbuffer requested by Direct2D and implements the surface's GDI read and
+write operations. `tools/dxmt-metal-init.m` initializes Metal early and
+retries the Altium PCB grid pipeline if the first attempt fails. DXMT's shader
+cache is disabled for this launcher because stale shaders can blank the 2D
+canvas on the tested Radeon.
+
+With Meson, Ninja, an x86-64 LLVM-MinGW toolchain on `PATH`, Xcode Command Line
+Tools and the Wine build directory, reproduce the DXMT modules using:
+
+```bash
+wine_build="$HOME/AltiumWine/build/obj-wine-11.16"
+bash tools/build-dxmt-modules.sh ./unpacked-release/modules/dxmt ./release-sources \
+  "$wine_build" ./modules-export/dxmt
+```
+
+The first input can also be the upstream CI ZIP. The build checks its input digests. It reuses only the command shader library
+from the pinned CI build and builds the replacement `d3d11.dll` and Metal
+initializer from source. The other DXMT binaries come from that same build.
