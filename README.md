@@ -61,6 +61,23 @@ The DXMT path restores exposed copper in 3D and supports the 2D PCB grid and
 schematic rendering. It was tested on Altium 26.12.2 with an AMD Radeon RX 6900 XT
 on macOS 15.8.2. The renderer is experimental.
 
+## Optional differential-routing fix for Altium 26.12.2
+
+If switching from single-track to differential routing leaves the PCB paused after
+Tab, quit Altium and run the following command from the installed kit.
+
+```bash
+bash ~/AltiumWine/kit/altium-wine.sh routing-guard install
+```
+
+The command builds the fix locally with the kit's Wine Mono and applies it only to
+the tested Altium 26.12.2 PCB provider. It keeps the original provider in the Wine
+prefix for rollback. To restore it, quit Altium and run the following command.
+
+```bash
+bash ~/AltiumWine/kit/altium-wine.sh routing-guard restore
+```
+
 ## Screenshots
 
 **PCB View**

@@ -9,6 +9,7 @@
 #   install [DIR] run the Altium offline installer (Installer.Exe in DIR, default: the folder
 #                 that contains this kit) with debug logging
 #   run           launch the installed Altium Designer (X2.EXE, or DXP.EXE for 17 and older)
+#   routing-guard install|restore   manage the optional Altium 26.12.2 routing fix
 #   hang-dump     backtrace every Wine thread; run this from a 2nd Terminal while something hangs
 #   doctor        write system / Wine / prefix diagnostics to logs/
 #   wine ARGS...  run any command in the Altium prefix, e.g.  wine winecfg   or   wine regedit
@@ -1069,6 +1070,11 @@ main() {
         deps)       cmd_deps "$@" ;;
         install)    cmd_install "$@" ;;
         run)        cmd_run "$@" ;;
+        routing-guard)
+            [ "$#" -eq 1 ] || die "Use routing-guard install or routing-guard restore."
+            require_wine
+            bash "$KIT_DIR/tools/ad26-routing/guard.sh" "$1" "$PREFIX" "$WINE"
+            ;;
         hang-dump)  cmd_hang_dump ;;
         doctor)     cmd_doctor ;;
         wine)       cmd_wine "$@" ;;
