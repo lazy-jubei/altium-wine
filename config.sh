@@ -32,6 +32,10 @@ WINEDEBUG_RUN="${ALTIUM_WINEDEBUG:-fixme-all}"   # override per run: ALTIUM_WINE
 # installer and lacks the Altium fixes; see README). The patches are for staging 11.16 only.
 USE_PATCHED_WINE=1
 
+# Both options default to 1 for all Altium versions. Set either to 0 in config.local.sh.
+# AD_CTRL_SHIFT_WHEEL=1  # Restore a vertical wheel event for Ctrl+Shift layer switching.
+# AD_RAM_MAPPINGS=1     # Back anonymous Wine mappings with a 2 GiB RAM disk.
+
 # AD17's CefSharp Home page/reports: avoid a spinning Chromium GPU process.
 # This does not change CAD rendering. Set to 0 to test Chromium's GPU path.
 AD17_CEF_SOFTWARE_RENDERING="${AD17_CEF_SOFTWARE_RENDERING:-1}"
@@ -64,12 +68,6 @@ AD17_NATIVE_GDI_WORKERS="${AD17_NATIVE_GDI_WORKERS:-2}"
 
 # Match AD26's UI backing color space without changing its GPU canvas.
 AD26_SRGB_WINDOWS="${AD26_SRGB_WINDOWS:-1}"
-
-# Restore a vertical mouse-wheel event for Ctrl+Shift layer switching in AD26.
-ALTIUM_CTRL_SHIFT_WHEEL="${ALTIUM_CTRL_SHIFT_WHEEL:-1}"
-
-# Optionally back anonymous Wine mappings with a 2 GiB RAM disk on macOS.
-AD26_RAM_MAPPINGS="${AD26_RAM_MAPPINGS:-0}"
 
 # Restore native window order if another app covers the active Altium document after a click.
 AD26_RESTORE_CLICKED_WINDOW_ORDER="${AD26_RESTORE_CLICKED_WINDOW_ORDER:-1}"

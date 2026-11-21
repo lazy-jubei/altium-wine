@@ -53,7 +53,7 @@ The standard Wine runtime keeps its stock 64-bit Direct3D modules. Patch `0045`
 adds the DXMT window and surface bridge to the Mac driver. The optional Intel
 runtime uses the same driver, wineserver and stock Win32u module.
 `0047` translates horizontal-only discrete Ctrl+Shift scroll events back to
-vertical wheel events so the Altium 26 layer shortcut works in Wine.
+vertical wheel events for Altium's PCB layer shortcut in Wine.
 `0048` lets wineserver place its anonymous mapping files in a private,
 executable-mapping-capable directory while retaining the normal fallback.
 `wow64cpu.dll` and `user32.dll` are transformed from the checksum-pinned stock
