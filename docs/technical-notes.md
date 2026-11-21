@@ -144,6 +144,30 @@ CefSharp's GPU process failed to initialize ANGLE on Direct3D 11 under Wine. The
 
 AD17 uses CefSharp instead of WebView2. Its Chromium GPU helper can spin at roughly 150% CPU and leave the Home page and HTML reports blank. For `DXP.EXE`, `run` now supplies `--disable-gpu --disable-gpu-compositing`; both views render in testing and helpers stay at low CPU usage. PCB Direct3D rendering still works. `AD17_CEF_SOFTWARE_RENDERING=0` opts out. Some current websites use JavaScript features absent from AD17's old Chromium, so these flags cannot restore every website feature.
 
+### Differential routing stays paused after Tab
+
+Switching directly from single-track to differential routing under Wine can
+deliver a second end notification from the single-track router after the pair
+has started. The Properties panel then loses the controls and keyboard handler
+for the active route. In testing, pressing Esc to exit single-track routing
+before starting the pair avoided the duplicate notification.
+
+The optional routing guard ignores that specific late notification. Quit Altium
+and run this command from the installed kit.
+
+```bash
+bash ~/AltiumWine/kit/altium-wine.sh routing-guard install
+```
+
+The command uses bundled Wine Mono to build the guard locally. It checks the
+PCB provider's SHA-256 against the tested Altium 26.12.2 DLL before applying the
+change and keeps a verified copy of the original in the Wine prefix. To restore
+the original, quit Altium and run the following command.
+
+```bash
+bash ~/AltiumWine/kit/altium-wine.sh routing-guard restore
+```
+
 ## Performance
 
 Altium 26.10.1, measured with MoltenVK frame statistics on an M4:
