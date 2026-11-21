@@ -1,0 +1,26 @@
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -1754,6 +1754,23 @@
+                     y = pixelsPerLine * [theEvent deltaY];
+                 }
+ 
++                /* macOS rotates a discrete vertical wheel into the horizontal axis
++                   when Shift is held. Altium needs a vertical wheel for this shortcut. */
++                if (!continuous && x && !y)
++                {
++                    const char *vertical_wheel = getenv("ALTIUM_CTRL_SHIFT_WHEEL");
++                    NSEventModifierFlags modifiers = [theEvent modifierFlags] &
++                        (NSEventModifierFlagControl | NSEventModifierFlagShift |
++                         NSEventModifierFlagOption | NSEventModifierFlagCommand);
++
++                    if (vertical_wheel && !strcmp(vertical_wheel, "1") &&
++                        modifiers == (NSEventModifierFlagControl | NSEventModifierFlagShift))
++                    {
++                        y = x;
++                        x = 0;
++                    }
++                }
++
+                 /* Mac: negative is right or down, positive is left or up.
+                    Win32: negative is left or down, positive is right or up.
+                    So, negate the X scroll value to translate. */

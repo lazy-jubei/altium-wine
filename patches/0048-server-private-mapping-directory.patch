@@ -1,0 +1,146 @@
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -278,7 +278,7 @@
+ }
+ 
+ /* simplified version of mkstemps() */
+-static int make_temp_file( char name[16] )
++static int make_temp_file( int dir_fd, char name[16] )
+ {
+     static unsigned int value;
+     int i, fd = -1;
+@@ -287,19 +287,19 @@
+     for (i = 0; i < 0x8000 && fd < 0; i++, value += 7777)
+     {
+         snprintf( name, 16, "tmpmap-%08x", value );
+-        fd = open( name, O_RDWR | O_CREAT | O_EXCL, 0600 );
++        fd = openat( dir_fd, name, O_RDWR | O_CREAT | O_EXCL, 0600 );
+     }
+     return fd;
+ }
+ 
+-/* check if the current directory allows exec mappings */
+-static int check_current_dir_for_exec(void)
++/* check if this directory allows exec mappings */
++static int check_dir_for_exec( int dir_fd )
+ {
+     int fd;
+     char tmpfn[16];
+     void *ret = MAP_FAILED;
+ 
+-    fd = make_temp_file( tmpfn );
++    fd = make_temp_file( dir_fd, tmpfn );
+     if (fd == -1) return 0;
+     if (grow_file( fd, 1 ))
+     {
+@@ -307,15 +307,55 @@
+         if (ret != MAP_FAILED) munmap( ret, get_page_size() );
+     }
+     close( fd );
+-    unlink( tmpfn );
++    unlinkat( dir_fd, tmpfn, 0 );
+     return (ret != MAP_FAILED);
++}
++
++/* A private directory can hold transient mapping files independently of the prefix. */
++static int open_mapping_dir(void)
++{
++    const char *path = getenv( "ALTIUM_WINE_MAPPING_DIR" );
++    struct stat st;
++    int fd;
++
++    if (!path || !*path) return -1;
++    if (path[0] != '/') goto fallback;
++    fd = open( path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC );
++    if (fd != -1)
++    {
++        if (!fstat( fd, &st ) && st.st_uid == getuid() && !(st.st_mode & 077) &&
++            check_dir_for_exec( fd ))
++            return fd;
++        close( fd );
++    }
++fallback:
++    fprintf( stderr, "wineserver: cannot use ALTIUM_WINE_MAPPING_DIR; using the normal directory\n" );
++    return -1;
++}
++
++static int create_mapping_file_at( int dir_fd, file_pos_t size )
++{
++    char tmpfn[16];
++    int fd = make_temp_file( dir_fd, tmpfn );
++
++    if (fd == -1)
++        file_set_error();
++    else
++    {
++        if (!grow_file( fd, size ))
++        {
++            close( fd );
++            fd = -1;
++        }
++        unlinkat( dir_fd, tmpfn, 0 );
++    }
++    return fd;
+ }
+ 
+ /* create a temp file for anonymous mappings */
+ static int create_temp_file( file_pos_t size )
+ {
+-    static int temp_dir_fd = -1;
+-    char tmpfn[16];
++    static int temp_dir_fd = -1, override_dir_fd = -1;
+     int fd;
+ 
+ #if defined(HAVE_MEMFD_CREATE) && defined(MFD_EXEC)
+@@ -327,33 +367,25 @@
+ #endif
+     if (temp_dir_fd == -1)
+     {
++        unsigned int previous_status = get_error();
++
++        override_dir_fd = open_mapping_dir();
+         temp_dir_fd = server_dir_fd;
+-        if (!check_current_dir_for_exec())
+-        {
+-            /* the server dir is noexec, try the config dir instead */
+-            fchdir( config_dir_fd );
+-            if (check_current_dir_for_exec())
+-                temp_dir_fd = config_dir_fd;
+-            else  /* neither works, fall back to server dir */
+-                fchdir( server_dir_fd );
+-        }
+-    }
+-    else if (temp_dir_fd != server_dir_fd) fchdir( temp_dir_fd );
+-
+-    fd = make_temp_file( tmpfn );
+-    if (fd != -1)
+-    {
+-        if (!grow_file( fd, size ))
+-        {
+-            close( fd );
+-            fd = -1;
+-        }
+-        unlink( tmpfn );
+-    }
+-    else file_set_error();
+-
+-    if (temp_dir_fd != server_dir_fd) fchdir( server_dir_fd );
+-    return fd;
++        if (!check_dir_for_exec( server_dir_fd ) &&
++            check_dir_for_exec( config_dir_fd )) temp_dir_fd = config_dir_fd;
++        set_error( previous_status );
++    }
++
++    if (override_dir_fd != -1)
++    {
++        unsigned int previous_status = get_error();
++        if ((fd = create_mapping_file_at( override_dir_fd, size )) != -1) return fd;
++        fprintf( stderr, "wineserver: mapping directory allocation failed; using the normal directory\n" );
++        close( override_dir_fd );
++        override_dir_fd = -1;
++        set_error( previous_status );
++    }
++    return create_mapping_file_at( temp_dir_fd, size );
+ }
+ 
+ /* find a memory view from its base address */

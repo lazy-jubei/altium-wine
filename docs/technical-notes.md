@@ -308,6 +308,21 @@ of a 20-second right drag; the cursor and status bars are excluded. The launcher
 enables this for AD17 and AD26; `AD17_SRGB_WINDOWS=0` or
 `AD26_SRGB_WINDOWS=0` restores the respective previous backing store.
 
+Altium 26 uses Ctrl+Shift with the vertical mouse wheel to switch PCB layers.
+On macOS, Shift can turn a discrete vertical wheel event into a horizontal
+event before Wine receives it. Patch `0047` restores the vertical axis for
+horizontal-only discrete events with exactly Ctrl+Shift. Set
+`ALTIUM_CTRL_SHIFT_WHEEL=0` in `config.local.sh` to disable it.
+
+Set `AD26_RAM_MAPPINGS=1` in `config.local.sh` to try RAM-backed Wine mappings
+with Altium 26. The option needs the macOS Command Line Tools and a wineserver
+built with patch `0048`. The launcher prepares or reuses a 2 GiB APFS RAM disk
+at `/Volumes/AltiumWineRAM`. After Altium and the prefix's Wine services have
+exited, the next launch sends anonymous mapping files to its private directory.
+Project files and permanent Wine prefix files stay on their ordinary storage.
+Wine uses its normal directory if the RAM directory cannot be used or creating
+a mapping file there fails. The option is off by default.
+
 Before the immediate-upload and transparency changes below, a dense Music PCB
 panned at 6.9 fps in 3D in the full Retina window. Disabling antialiasing
 reached 7.4 fps, disabling the command-stream thread dropped to 5.1 fps, and

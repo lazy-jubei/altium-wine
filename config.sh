@@ -65,6 +65,12 @@ AD17_NATIVE_GDI_WORKERS="${AD17_NATIVE_GDI_WORKERS:-2}"
 # Match AD26's UI backing color space without changing its GPU canvas.
 AD26_SRGB_WINDOWS="${AD26_SRGB_WINDOWS:-1}"
 
+# Restore a vertical mouse-wheel event for Ctrl+Shift layer switching in AD26.
+ALTIUM_CTRL_SHIFT_WHEEL="${ALTIUM_CTRL_SHIFT_WHEEL:-1}"
+
+# Optionally back anonymous Wine mappings with a 2 GiB RAM disk on macOS.
+AD26_RAM_MAPPINGS="${AD26_RAM_MAPPINGS:-0}"
+
 # Restore native window order if another app covers the active Altium document after a click.
 AD26_RESTORE_CLICKED_WINDOW_ORDER="${AD26_RESTORE_CLICKED_WINDOW_ORDER:-1}"
 

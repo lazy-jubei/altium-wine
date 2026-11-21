@@ -691,6 +691,23 @@ select_ad26_dxmt() {
     say "Using DXMT for Altium Designer 26"
 }
 
+configure_ad26_ram_mappings() {
+    [ "${AD26_RAM_MAPPINGS:-0}" = "1" ] && [ -z "${ALTIUM_WINE_MAPPING_DIR:-}" ] || return 0
+    if ! LC_ALL=C grep -aFq 'ALTIUM_WINE_MAPPING_DIR' "$WINESERVER"; then
+        warn "RAM mappings require a wineserver built with patch 0048. Using the normal mapping directory."
+        return 0
+    fi
+
+    local mapping_dir
+    if /usr/bin/xcode-select -p >/dev/null 2>&1 &&
+       mapping_dir="$(/usr/bin/python3 "$KIT_DIR/tools/ram-mappings.py")"; then
+        export ALTIUM_WINE_MAPPING_DIR="$mapping_dir"
+        say "RAM-backed temporary Wine mappings configured for the next wineserver start"
+    else
+        warn "RAM mappings unavailable, using the normal Wine mapping directory"
+    fi
+}
+
 configure_ad26_browser() {
     [ "${AD26_CEF_FALLBACK:-1}" = "1" ] || return 0
 
@@ -750,6 +767,7 @@ cmd_run() {
                     ;;
                 *) die "Unknown AD26_RENDERER: $AD26_RENDERER" ;;
             esac
+            configure_ad26_ram_mappings
             ;;
     esac
     case "$exe" in *DXP.EXE|*dxp.exe)
@@ -773,6 +791,7 @@ cmd_run() {
         *X2.EXE|*x2.exe)
             configure_ad26_browser "$exe"
             export ALTIUM_MAC_SRGB="${AD26_SRGB_WINDOWS:-1}"
+            export ALTIUM_CTRL_SHIFT_WHEEL="${ALTIUM_CTRL_SHIFT_WHEEL:-1}"
             export ALTIUM_RESTORE_CLICKED_WINDOW_ORDER="${AD26_RESTORE_CLICKED_WINDOW_ORDER:-1}"
             export WINE_D2D_PRIMITIVE_CACHE="${AD26_D2D_PRIMITIVE_CACHE:-1}"
             export WINE_D2D_BATCH="${AD26_D2D_BATCH:-1}"
