@@ -6,8 +6,8 @@
 #   (none)        setup if needed, install winetricks deps if needed, then run the installer
 #   setup         download Wine, create the prefix, apply base config  (--force-wine re-downloads)
 #   deps [verbs]  install winetricks verbs (default: WINETRICKS_VERBS in config.sh)
-#   install [DIR] run the Altium offline installer (Installer.Exe in DIR, default: the folder
-#                 that contains this kit) with debug logging
+#   install [PATH] run an online setup .exe or the offline installer from a folder
+#                  (default: the folder that contains this kit)
 #   run           launch the installed Altium Designer (X2.EXE, or DXP.EXE for 17 and older)
 #   routing-guard install|restore   manage the optional Altium 26.12.2 routing fix
 #   hang-dump     backtrace every Wine thread; run this from a 2nd Terminal while something hangs
@@ -590,7 +590,7 @@ launch_logged() {  # launch_logged LABEL WORKDIR EXE [ARGS...]
     if [ "$INTERRUPTED" != "1" ]; then
         wait "$pid"; rc=$?
         local t=0
-        if [ "$label" = installer ]; then
+        if [ "$label" = installer ] || [ "$label" = online-installer ]; then
             # Wait for the installer's own processes only. Altium itself, started from the
             # installer's last page, keeps running and mustn't hold up setup.
             say "Process exited with code $rc; waiting up to 15 min for the installer to close (Ctrl+C to stop)"
@@ -614,8 +614,11 @@ launch_logged() {  # launch_logged LABEL WORKDIR EXE [ARGS...]
         wait "$pid" 2>/dev/null
     fi
     trap - INT
-    collect_app_logs "$marker"
-    snapshot_state
+    # The online installer can record its sign-in token in its own log.
+    if [ "$label" != online-installer ]; then
+        collect_app_logs "$marker"
+        snapshot_state
+    fi
     summarize "$log" "$label" "$rc" "$start"
     rm -f "$marker"
     return $rc
@@ -638,7 +641,7 @@ EOF
 }
 
 cmd_install() {  # cmd_install [DIR | DIR/setup.exe]
-    local dir="${1:-$ALTIUM_DIR}" exe=""
+    local dir="${1:-$ALTIUM_DIR}" exe="" helper windows_exe
     case "$dir" in
         *.exe|*.Exe|*.EXE) exe="$(basename "$dir")"; dir="$(dirname "$dir")" ;;
     esac
@@ -646,8 +649,21 @@ cmd_install() {  # cmd_install [DIR | DIR/setup.exe]
         # Installer.Exe (Altium 18 and later) or AltiumDesigner<N>Setup.exe (older offline setups)
         exe="$(cd "$dir" 2>/dev/null && ls Installer.Exe AltiumDesigner*Setup.exe 2>/dev/null | head -n 1)"
     fi
-    [ -n "$exe" ] && [ -f "$dir/$exe" ] || die "No Altium installer in $dir (pass the unzipped Altium offline setup folder)"
+    [ -n "$exe" ] && [ -f "$dir/$exe" ] || die "Pass the Altium online setup .exe or the unzipped offline setup folder."
     ensure_setup
+    case "$(printf '%s' "$exe" | tr '[:upper:]' '[:lower:]')" in
+        altiumdesignersetup*.exe)
+            helper="$WINE_BIN_DIR/altium-browser-launch.exe"
+            [ -f "$helper" ] || helper="$KIT_DIR/tools/altium-browser-launch.exe"
+            [ -f "$helper" ] || die "The online installer needs a kit with the browser helper. Rebuild with build-patched-wine.sh or use a release that includes it."
+            wine_env "-all"
+            dir="$(cd "$dir" && pwd -P)" || die "Can't open the installer folder."
+            windows_exe="$("$WINE" winepath -w "$dir/$exe")" || die "Can't translate the online installer path."
+            say "Leave Unified Sign In enabled and continue in your Mac's default browser."
+            launch_logged online-installer "$dir" "$helper" --setup-online "$windows_exe"
+            return $?
+            ;;
+    esac
     wine_env "$WINEDEBUG_INSTALL"
     print_installer_tips | sed "s#<kit>#$KIT_DIR#"
     launch_logged installer "$dir" "$exe"

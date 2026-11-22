@@ -35,7 +35,7 @@ enum Step: Int, CaseIterable, Identifiable {
     // Shown under the step in the sidebar.
     var subtitle: String {
         switch self {
-        case .installer: return "Your offline setup"
+        case .installer: return "Your Altium download"
         case .wine: return "Automatic · about 10 minutes"
         case .altium: return "In the Altium installer"
         case .finish: return "Add to Applications"
@@ -46,7 +46,7 @@ enum Step: Int, CaseIterable, Identifiable {
     var explanation: String {
         switch self {
         case .installer:
-            return "Choose the Altium Designer offline installer you downloaded from your Altium account. It can be the folder or the .zip."
+            return "Choose your Altium Designer online setup .exe, offline setup folder, or offline .zip."
         case .wine:
             return "Setting up Wine, which runs Altium on your Mac, in its own disk image. This takes about 10 minutes. You can leave this running."
         case .altium:
@@ -280,21 +280,25 @@ final class Installer: ObservableObject {
         _ = bytes.withUnsafeBufferPointer { write(input, $0.baseAddress, $0.count) }
     }
 
-    // The offline installer is a folder or a .zip; install.sh checks what is inside it.
+    // install.sh validates the installer file name and the contents of offline folders.
     func checkFound() {
         let path = (field.trimmingCharacters(in: .whitespaces) as NSString).expandingTildeInPath
         var directory: ObjCBool = false
         let exists = !path.isEmpty && FileManager.default.fileExists(atPath: path, isDirectory: &directory)
-        found = exists && (directory.boolValue || path.lowercased().hasSuffix(".zip"))
+        let ext = (path as NSString).pathExtension.lowercased()
+        found = exists && (directory.boolValue || ext == "zip" || ext == "exe")
     }
 
     func browse() {
         let panel = NSOpenPanel()
-        panel.message = "Choose the Altium offline installer (folder or .zip)"
+        panel.message = "Choose the Altium online setup .exe, offline folder, or offline .zip"
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
         panel.allowedContentTypes = [.zip, .folder]
+        if let executable = UTType(filenameExtension: "exe") {
+            panel.allowedContentTypes.append(executable)
+        }
         panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
         if panel.runModal() == .OK, let url = panel.url {
             field = url.path

@@ -21,12 +21,12 @@ Altium Designer on Linux (x86-64)
   bash altium-wine.sh doctor
   bash altium-wine.sh wine PROGRAM [ARG ...]
 
-PATH can be an offline ZIP, the extracted folder, or the setup executable.
+PATH can be an online setup executable, an offline ZIP, or an extracted setup folder.
 ALTIUM_WINE_ROOT defaults to ~/AltiumWineLinux.
 ALTIUM_WINE_BIN selects another Wine executable. Use a separate root to test it.
 ALTIUM_WINE_RENDERER selects wined3d (default), wined3d-vulkan, or patched dxvk for X2.EXE.
 ALTIUM_WINE_NVIDIA=1 enables NVIDIA PRIME offload for WineD3D with OpenGL.
-ALTIUM_WINE_INSTALL_DESKTOP defaults to 1280x800; use native for a regular window.
+ALTIUM_WINE_INSTALL_DESKTOP defaults to native; use 1280x800 for a Wine desktop.
 ALTIUM_WINE_DESKTOP sets a virtual desktop for the editor, e.g. 1280x800.
 HELP
 }
@@ -224,7 +224,8 @@ setup() (
 find_setup_exe() {
     local directory="$1" installers=()
     mapfile -d '' -t installers < <(find "$directory" -maxdepth 3 -type f \
-        \( -iname 'Installer.exe' -o -iname 'AltiumDesigner*Setup.exe' \) -print0)
+        \( -iname 'Installer.exe' -o -iname 'AltiumDesigner*Setup.exe' \
+           -o -iname 'AltiumDesigner*Setup_*.exe' \) -print0)
     case ${#installers[@]} in
         0) die "No Altium setup executable found in $directory" ;;
         1) printf '%s\n' "${installers[0]}" ;;
@@ -232,9 +233,9 @@ find_setup_exe() {
     esac
 }
 
-offline_exe() (
+installer_exe() (
     local source digest destination stage
-    [[ $# = 1 ]] || die 'Pass an offline ZIP, folder, or setup executable.'
+    [[ $# = 1 ]] || die 'Pass an online setup executable, offline ZIP, or setup folder.'
     source="$(realpath -e -- "$1")" || die "Installer path unavailable: $1"
     if [[ -d $source ]]; then
         find_setup_exe "$source"
@@ -261,14 +262,19 @@ launch() {
     local label="$1" desktop="$2" exe="$3" log windows_exe helper
     shift 3
     local command=("$WINE" "$exe" "$@")
+    if [[ $label = Setup || $desktop != native ]]; then
+        windows_exe="$("$WINE" winepath -w "$exe")" || die "Cannot translate $exe"
+    fi
+    if [[ $label = Setup ]]; then
+        helper="$(build_helper)" || exit 1
+        command=("$WINE" "$helper" --setup-native "$windows_exe" "$@")
+    fi
     if [[ $desktop != native ]]; then
         [[ $desktop =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]] || die "Invalid Wine desktop size: $desktop"
-        windows_exe="$("$WINE" winepath -w "$exe")" || die "Cannot translate $exe"
         command=("$WINE" explorer "/desktop=Altium-$label,$desktop" "$windows_exe" "$@")
         if [[ $label = Setup ]]; then
-            helper="$(build_helper)" || exit 1
             helper="$("$WINE" winepath -w "$helper")" || die 'Cannot translate the setup helper path.'
-            command=("$WINE" explorer "/desktop=Altium-$label,$desktop" "$helper" --setup-desktop "$windows_exe")
+            command=("$WINE" explorer "/desktop=Altium-$label,$desktop" "$helper" --setup-desktop "$windows_exe" "$@")
         fi
     fi
     log="$(mktemp --suffix=.log "$LOGS/$label.XXXXXX")"
@@ -280,13 +286,16 @@ install_altium() (
     mkdir -p -- "$DOWNLOADS"
     exec 7>"$ROOT/.install.lock"
     flock -n 7 || die "An installer is already running in $ROOT"
-    local exe
-    exe="$(offline_exe "$@")" || exit 1
+    local exe name options=()
+    exe="$(installer_exe "$@")" || exit 1
     setup
-    printf '%s\n' 'On the license page, use Advanced Settings to disable Unified Sign In if it is enabled.'
-    # Wine's virtual desktop keeps the installer dialog and its layered effects
-    # under one X11 window. Some compositors otherwise cover the dialog with its overlays.
-    launch Setup "${ALTIUM_WINE_INSTALL_DESKTOP:-1280x800}" "$exe"
+    name="${exe##*/}"
+    case "${name,,}" in
+        altiumdesigner*setup.exe|altiumdesigner*setup_*.exe) options=(--online) ;;
+    esac
+    printf '%s\n' 'For online setup, leave Unified Sign In enabled to sign in through your browser.' \
+        'For offline setup, disable Unified Sign In under Advanced Settings if it is enabled.'
+    launch Setup "${ALTIUM_WINE_INSTALL_DESKTOP:-native}" "$exe" "${options[@]}"
 )
 
 get_altium() {
@@ -471,7 +480,7 @@ install_main() {
     if (( skip )); then
         setup
     elif [[ -z $exe ]] || (( reinstall )); then
-        [[ -n $source ]] || die 'Use --altium-installer PATH with your offline ZIP or folder.'
+        [[ -n $source ]] || die 'Use --altium-installer PATH with the online setup executable or offline package.'
         install_altium "$source"
         exe="$(get_altium)" || exe=""
         [[ -n $exe ]] || die "Setup exited before Altium was installed. See $LOGS."

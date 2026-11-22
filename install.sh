@@ -6,7 +6,7 @@
 #   bash wine-kit/install.sh [options]          # from a kit checkout (builds Wine from source)
 #
 # Options:
-#   --altium-installer PATH  the Altium offline setup folder or its .zip
+#   --altium-installer PATH  the online setup .exe, offline setup folder, or .zip
 #                            (default: look in ~/Downloads, then ask)
 #   --skip-altium            set up Wine only; run the Altium installer later
 #   --reinstall-altium       run the Altium installer even if Altium is already installed
@@ -143,8 +143,8 @@ main() {
         ui_message "This installs Altium Designer on your Mac.
 
 You only need to do two things:
-1. Choose the Altium offline installer you downloaded from your Altium account.
-2. Sign in inside the Altium installer when it opens.
+1. Choose the Altium installer you downloaded from your Altium account.
+2. Follow the sign-in instructions for your installer.
 
 Everything else runs on its own. You need your own Altium license." 'Start' 'Welcome'
     fi
@@ -163,12 +163,12 @@ Everything else runs on its own. You need your own Altium license." 'Start' 'Wel
     if [ $skip_altium = 0 ] && [ -z "$altium_src" ]; then
         altium_src="$(find_altium_installer)"
         if [ -n "$altium_src" ]; then
-            say "Found the Altium offline installer: $altium_src"
+            say "Found the Altium installer: $altium_src"
             if [ $yes = 0 ] && [ "$TTY_IN" = /dev/tty ] && ! ask_yes "Use it?"; then altium_src=""; fi
         fi
         if [ -z "$altium_src" ] && [ "$TTY_IN" = /dev/tty ] && [ $yes = 0 ]; then
-            echo "Download the Altium Designer offline installer from your Altium account"
-            echo "(altium.com > Downloads > Offline installation), then give its folder or .zip."
+            echo "Download Altium Designer from your Altium account, then enter the online"
+            echo "setup .exe, offline setup folder, or offline .zip."
             printf 'Path (empty to skip for now): '
             read -r altium_src < /dev/tty || altium_src=""
             altium_src="${altium_src%\"}"; altium_src="${altium_src#\"}"; altium_src="${altium_src%/}"
@@ -270,7 +270,7 @@ Everything else runs on its own. You need your own Altium license." 'Start' 'Wel
 
     # ---- Altium -------------------------------------------------------------------------
     if [ $skip_altium = 0 ]; then
-        local setup_dir="$altium_src"
+        local setup_dir="$altium_src" unpacked=0
         case "$altium_src" in
             *.zip|*.ZIP)
                 setup_dir="$dl/altium-offline-setup"
@@ -278,23 +278,31 @@ Everything else runs on its own. You need your own Altium license." 'Start' 'Wel
                 say "Unpacking $(basename "$altium_src") (several GB, takes a few minutes)"
                 rm -rf "$setup_dir"; mkdir -p "$setup_dir"
                 ditto -x -k "$altium_src" "$setup_dir" || die "Couldn't unzip $altium_src"
+                unpacked=1
                 ;;
         esac
-        local inst
-        inst="$(find "$setup_dir" -maxdepth 3 \( -iname 'Installer.Exe' -o -iname 'AltiumDesigner*Setup.exe' \) 2>/dev/null | head -n 1)"
+        local inst signin_tips
+        inst="$(find_altium_setup_exe "$setup_dir")"
         [ -n "$inst" ] || die "No Altium installer in $setup_dir"
+        case "$(printf '%s' "${inst##*/}" | tr '[:upper:]' '[:lower:]')" in
+            altiumdesignersetup*.exe)
+                signin_tips="Leave Unified Sign In enabled and continue in your Mac's default browser."
+                ;;
+            *)
+                signin_tips="On the License Agreement page, open Advanced Settings, untick Unified Sign In, and sign in inside the installer."
+                ;;
+        esac
         say "Starting the Altium installer. In it:"
-        echo "   * License Agreement page: Advanced Settings > untick 'Unified Sign In', then sign in"
-        echo "     with the form inside the installer."
+        echo "   * $signin_tips"
         echo "   * If it stops responding, a dialog is probably behind it (Mission Control shows it)."
         ui_stage altium "running the Altium installer"
         ui_wait 'Install Altium' "Follow the Altium installer in its own window.
 
-On the License Agreement page, click Advanced Settings and untick Unified Sign In. Then sign in in the installer.
+$signin_tips
 
 If the installer stops responding, a dialog may be hidden behind it. Mission Control shows it." 'Waiting for the Altium installer to finish.'
         bash "$aw" install "$inst" < "$TTY_IN" || warn "The installer exited with an error; see $kit/logs/LATEST-summary.txt"
-        case "$setup_dir" in "$dl"/*) rm -rf "$setup_dir" ;; esac  # our unzipped copy only
+        if [ "$unpacked" = 1 ]; then rm -rf "$setup_dir"; fi
         x2="$(find_altium_exe "$(prefix_dir "$root")")"
         [ -n "$x2" ] && have_altium=1
         [ $have_altium = 1 ] || [ "$UI" != app ] || die "Altium wasn't installed. The Altium installer may have been closed early."
@@ -329,7 +337,7 @@ If the installer stops responding, a dialog may be hidden behind it. Mission Con
 
 Next time, open Altium Designer (Wine) from Applications."
         else
-            ui_emit finished "Wine is ready. Run setup again with your Altium offline installer to install Altium."
+            ui_emit finished "Wine is ready. Run setup again with your Altium installer."
         fi
         return 0
     fi
@@ -347,7 +355,7 @@ Next time, open Altium Designer (Wine) from Applications."
         echo "  System > General; it stays blank under Wine."
     else
         echo "  Wine is ready. Install Altium later with:"
-        echo "    bash \"$kit/install.sh\" --altium-installer <offline setup folder or .zip>"
+        echo "    bash \"$kit/install.sh\" --altium-installer <online .exe, offline folder, or .zip>"
     fi
     echo "  Logs: $kit/logs   Uninstall: bash \"$kit/install.sh\" --uninstall"
 }
@@ -394,18 +402,18 @@ ui_wait() {  # ui_wait TITLE TEXT STATUS: a page while something runs, with no b
     ui_emit wait "$1" "$2" "$3"
 }
 
-ui_choose_installer() {  # ui_choose_installer DEFAULT: prints the chosen offline setup folder or .zip
-    local chosen="$1" text="Choose the Altium Designer offline installer you downloaded from your Altium account (altium.com > Downloads > Offline installation). It can be the folder or the .zip."
+ui_choose_installer() {  # ui_choose_installer DEFAULT: prints the chosen installer path
+    local chosen="$1" text="Choose your Altium Designer online setup .exe, offline setup folder, or offline .zip."
     while true; do
         ui_emit choose "$chosen" "$text"
         chosen="$(ui_read)" || exit $?
         case "$chosen" in
             *.zip|*.ZIP) [ -f "$chosen" ] && { printf '%s\n' "$chosen"; return 0; } ;;
-            *) if [ -d "$chosen" ] && find "$chosen" -maxdepth 3 \( -iname 'Installer.Exe' -o -iname 'AltiumDesigner*Setup.exe' \) 2>/dev/null | grep -q .; then
+            *) if [ -n "$(find_altium_setup_exe "$chosen")" ]; then
                    printf '%s\n' "$chosen"; return 0
                fi ;;
         esac
-        text="No Altium installer was found there. Choose the offline installer folder (it contains Installer.exe) or its .zip."
+        text="No Altium installer was found there. Choose the online setup .exe, offline folder, or offline .zip."
     done
 }
 
@@ -522,7 +530,20 @@ fetch() {  # fetch URL FILE SHA256 - download (reusing a verified copy) and veri
     mv "$file.part" "$file"
 }
 
-find_altium_installer() {  # newest Altium offline setup folder (or zip) in ~/Downloads
+find_altium_setup_exe() {
+    local source="$1"
+    if [ -f "$source" ]; then
+        case "$(printf '%s' "${source##*/}" | tr '[:upper:]' '[:lower:]')" in
+            installer.exe|altiumdesigner*setup.exe|altiumdesignersetup*.exe) printf '%s\n' "$source" ;;
+        esac
+    elif [ -d "$source" ]; then
+        find "$source" -maxdepth 3 -type f \
+            \( -iname 'Installer.Exe' -o -iname 'AltiumDesigner*Setup.exe' -o -iname 'AltiumDesignerSetup*.exe' \) \
+            2>/dev/null | head -n 1
+    fi
+}
+
+find_altium_installer() {  # prefer the existing offline installer discovery, then try online
     local d
     for d in $(ls -dt "$HOME"/Downloads/*Altium*Designer* 2>/dev/null | tr ' ' '\001'); do
         d="$(echo "$d" | tr '\001' ' ')"
@@ -533,6 +554,8 @@ find_altium_installer() {  # newest Altium offline setup folder (or zip) in ~/Do
     for d in $(ls -t "$HOME"/Downloads/*Altium*Designer*.zip 2>/dev/null | tr ' ' '\001'); do
         echo "$d" | tr '\001' ' '; return 0
     done
+    d="$(ls -t "$HOME"/Downloads/AltiumDesignerSetup*.exe 2>/dev/null | head -n 1)"
+    if [ -f "$d" ]; then printf '%s\n' "$d"; fi
     return 0
 }
 
@@ -567,7 +590,7 @@ Altium Designer on Linux (x86-64)
   bash install.sh --altium-installer PATH [--build-from-source]
   bash install.sh --skip-altium
 
-PATH can be the Altium offline ZIP, an extracted folder, or the setup executable.
+PATH can be the Altium online setup executable, offline ZIP, or extracted folder.
 Use --root DIR to change the install location and --no-launcher to skip the
 application menu entry. The default location is ~/AltiumWineLinux.
 HELP

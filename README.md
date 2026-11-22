@@ -17,9 +17,10 @@ build.
 
 ## Install on Linux
 
-Download the release installer and run it with your Altium offline setup ZIP
-or folder. See the Linux guide for build prerequisites, Altium 365 sign-in,
-and renderer settings. [Linux setup guide](docs/linux.md)
+Download the release installer and run it with your Altium online setup
+executable, offline setup ZIP, or extracted setup folder. See the Linux guide
+for build prerequisites, Altium 365 sign-in, and renderer settings.
+[Linux setup guide](docs/linux.md)
 
 ```bash
 curl -fsSL https://github.com/lazy-jubei/altium-wine/releases/latest/download/install.sh -o install.sh
@@ -30,20 +31,20 @@ Open **Altium Designer (Wine)** from your application menu.
 
 ## Install on macOS
 
-Get the Altium offline installer from your Altium account, then download and run the [kit installer](https://github.com/lazy-jubei/altium-wine/releases/latest) from the latest release:
+Get the Altium online or offline installer from your Altium account, then download and run the [kit installer](https://github.com/lazy-jubei/altium-wine/releases/latest) from the latest release:
 
 ```bash
 curl -fL https://github.com/lazy-jubei/altium-wine/releases/latest/download/install.sh -o install.sh
 bash install.sh
 ```
 
-To choose your offline setup folder or ZIP:
+To choose an installer from Terminal:
 
 ```bash
-bash install.sh --altium-installer /path/to/offline-setup
+bash install.sh --altium-installer "$HOME/Downloads/AltiumDesignerSetup_26_12_2.exe"
 ```
 
-A setup window opens and walks you through it. You only need to do two things: choose the Altium offline installer, then sign in inside the Altium installer when it opens. Everything else runs on its own. The window has a Terminal pane with the details. It's built on your Mac from `tools/AltiumInstaller.swift` with Apple's Command Line Tools, so there's no downloaded app to approve. Without the Command Line Tools, or with `--terminal`, the installer asks in Terminal instead.
+A setup window walks you through choosing the installer and signing in. Online setup opens your Mac's default browser with **Unified Sign In** enabled. You can also pass an offline setup folder or ZIP. The window has a Terminal pane with the details. It's built on your Mac from `tools/AltiumInstaller.swift` with Apple's Command Line Tools. Without the Command Line Tools, or with `--terminal`, the installer asks in Terminal instead.
 
 ![The Altium Designer setup window](docs/screenshots/setup-window.png)
 

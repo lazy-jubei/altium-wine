@@ -17,9 +17,10 @@ curl -fL https://github.com/lazy-jubei/altium-wine/releases/latest/download/inst
 bash install.sh
 ```
 
-For a specific offline setup folder or ZIP, use `bash install.sh --altium-installer /path/to/offline-setup`. The release includes prebuilt patched Wine modules, so Xcode is not required for the default install.
+Pass an online setup .exe, offline setup folder, or offline ZIP with `--altium-installer`.
+The release includes prebuilt patched Wine modules, so Xcode is not required for the default install.
 
-A setup window walks you through it (`--terminal` asks in Terminal instead). The installer sets up Wine and fonts, runs your Altium installer, and creates `~/Applications/Altium Designer (Wine).app`. Downloads are checksum-verified. Get the Altium offline installer from your Altium account.
+A setup window walks you through it (`--terminal` asks in Terminal instead). The installer sets up Wine and fonts, runs your Altium installer, and creates `~/Applications/Altium Designer (Wine).app`. Downloads are checksum-verified. Get the Altium installer from your Altium account.
 
 - `--altium-installer PATH`
 - `--skip-altium`
@@ -47,13 +48,14 @@ The first run:
 
 1. Downloads the WineHQ macOS build (Gcenx wine-staging 11.16, about 185 MB, checksum-verified).
 2. Builds the patched Wine (`build-patched-wine.sh`, about 15 min the first time). It needs the Xcode Command Line Tools and MacPorts (for bison), unless `PATCHED_MODULES_DIR` points at prebuilt modules.
-3. Creates the prefix, installs core fonts and starts `Installer.Exe`.
+3. Creates the prefix, installs core fonts and starts the chosen installer.
 
 DXVK-macOS (about 4 MB, checksum-verified) is downloaded the first time you `run`.
 
 **While the installer is open:**
 
-- On the License Agreement page, click **Advanced Settings** and untick **Unified Sign In**. Use the login form inside the installer.
+- For online setup, leave **Unified Sign In** enabled and sign in through the Mac's default browser.
+- For offline setup, open **Advanced Settings** on the License Agreement page and untick **Unified Sign In**. Use the login form inside the installer.
 - If the window goes blurry and stops responding, a dialog is hidden behind it. Bring it forward with Mission Control (F3) or the **Window** menu.
 
 **First start of Altium:**

@@ -5,12 +5,12 @@ was tested on Ubuntu 24.04 (X11) with Altium Designer 26.12.2.
 
 ## Install
 
-Download the release installer and pass your Altium offline ZIP, extracted
-folder, or setup executable.
+Download the release installer and pass your Altium online setup executable,
+offline ZIP, or extracted setup folder.
 
 ```sh
 curl -fsSL https://github.com/lazy-jubei/altium-wine/releases/latest/download/install.sh -o install.sh
-bash install.sh --altium-installer "$HOME/Downloads/OfflineSetup_Altium_Designer_Public_26_12_2.zip"
+bash install.sh --altium-installer "$HOME/Downloads/AltiumDesignerSetup_26_12_2.exe"
 ```
 
 The release installer verifies the kit archive and stores it under
@@ -23,10 +23,13 @@ Wine, extracted ZIPs, the prefix, and logs live under `~/AltiumWineLinux`.
 Use `--root DIR` to select a separate install. Set `ALTIUM_WINE_BIN` to another
 Wine executable when testing runners in separate roots.
 
-The installer opens on a Wine virtual desktop. This keeps the Advanced
-Settings dialog above its decorative layers. Those layers can cover the
-dialog in a regular Wine window under GNOME on X11. If Unified Sign In is
-enabled in the installer's Advanced Settings, turn it off before proceeding.
+The installer opens in a regular window. The Linux launcher hides the
+decorative effects that can cover modal dialogs under GNOME on X11.
+Set `ALTIUM_WINE_INSTALL_DESKTOP=1280x800` to use a Wine virtual desktop.
+
+For online setup, leave **Unified Sign In** enabled and continue in your
+browser when Altium asks you to sign in. For offline setup, turn it off
+under **Advanced Settings** if it is enabled.
 At the end, clear **Run Altium Designer** and click **Finish** so the kit
 can apply its graphics settings on first launch.
 
