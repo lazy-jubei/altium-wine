@@ -38,12 +38,6 @@ curl -fL https://github.com/lazy-jubei/altium-wine/releases/latest/download/inst
 bash install.sh
 ```
 
-To choose an installer from Terminal:
-
-```bash
-bash install.sh --altium-installer "$HOME/Downloads/AltiumDesignerSetup_26_12_2.exe"
-```
-
 A setup window walks you through choosing the installer and signing in. Online setup opens your Mac's default browser with **Unified Sign In** enabled. You can also pass an offline setup folder or ZIP. The window has a Terminal pane with the details. It's built on your Mac from `tools/AltiumInstaller.swift` with Apple's Command Line Tools. Without the Command Line Tools, or with `--terminal`, the installer asks in Terminal instead.
 
 ![The Altium Designer setup window](docs/screenshots/setup-window.png)
