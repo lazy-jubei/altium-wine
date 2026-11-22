@@ -41,6 +41,9 @@
 set -u
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "$(uname -s)" = Linux ]; then
+    exec bash "$KIT_DIR/tools/altium-wine-linux.sh" build-wine "$@"
+fi
 LOG_DIR="$KIT_DIR/logs"
 TS="$(date +%Y%m%d-%H%M%S)"
 WORK_ROOT="${ALTIUM_WINE_ROOT:-$HOME/AltiumWine}"

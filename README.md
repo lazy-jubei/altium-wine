@@ -1,16 +1,34 @@
-# Altium Designer on macOS with Wine
+# Altium Designer on macOS and Linux with Wine
 
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=lazy-jubei_altium-wine&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=lazy-jubei_altium-wine)
 
-Run Altium Designer on Macs with patched Wine. Tested with Altium Designer 17.1 and 26.10.1 on an M4 Mac running macOS 15.7.9, and with 26.11.1 on an Intel Mac running macOS 15.8.2.
+Run Altium Designer on macOS and x86-64 Linux with patched Wine. From a checkout,
+`install.sh`, `altium-wine.sh`, and `build-patched-wine.sh` automatically select
+the implementation for your operating system.
 
-Altium 365 works, including project cloning.
+Tested with Altium Designer 26.12.2 on Ubuntu 24.04 (X11), with 17.1 and
+26.10.1 on an M4 Mac running macOS 15.7.9, and with 26.11.1 on an Intel Mac
+running macOS 15.8.2. Altium 365 project cloning works with the patched Wine
+build.
 
 ![3D PCB rotation in Altium on macOS](docs/screenshots/limesdr-pcb-rotation.gif)
 
 *[LimeSDR-USB](docs/screenshots/README.md) by [Lime Microsystems / Myriad-RF](https://github.com/myriadrf/LimeSDR-USB).*
 
-## Install
+## Install on Linux
+
+Clone the repository and run the installer with your Altium offline setup ZIP
+or folder. See the Linux guide for build prerequisites, Altium 365 sign-in,
+and renderer settings. [Linux setup guide](docs/linux.md)
+
+```bash
+git clone https://github.com/lazy-jubei/altium-wine.git
+cd altium-wine
+bash install.sh --build-from-source --altium-installer /path/to/offline-setup.zip
+bash altium-wine.sh run
+```
+
+## Install on macOS
 
 Get the Altium offline installer from your Altium account, then download and run the [kit installer](https://github.com/lazy-jubei/altium-wine/releases/latest) from the latest release:
 
@@ -75,7 +93,7 @@ on macOS 15.8.2. The renderer is experimental.
 
 ![Altium 17 schematic view](docs/screenshots/altium17-schematic.png)
 
-## Build
+## Build on macOS
 
 Requires Xcode Command Line Tools, MacPorts and, on Apple Silicon, Rosetta 2 (installed for you if missing). Allow about 3 GB of disk space and 15 minutes for the first build.
 

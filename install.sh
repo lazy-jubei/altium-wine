@@ -33,6 +33,13 @@ MODULES_SHA256=""
 # ---- end release stamp --------------------------------------------------------
 
 main() {
+    if [ "$(uname -s)" = Linux ]; then
+        local linux_kit
+        linux_kit="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+        [ -f "$linux_kit/tools/altium-wine-linux.sh" ] ||
+            die "On Linux, run install.sh from the repository checkout."
+        exec bash "$linux_kit/tools/altium-wine-linux.sh" kit-install "$@"
+    fi
     local root="${ALTIUM_WINE_ROOT:-}"
     local altium_src="" skip_altium=0 reinstall_altium=0 from_source=0 launcher=1 yes=0 uninstall=0 terminal=0
     local all_args

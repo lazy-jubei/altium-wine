@@ -24,6 +24,10 @@
 set -u
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "$(uname -s)" = Linux ]; then
+    exec bash "$KIT_DIR/tools/altium-wine-linux.sh" "$@"
+fi
+. "$KIT_DIR/tools/altium-prefix.sh"
 ALTIUM_DIR="$(cd "$KIT_DIR/.." && pwd)"
 LOG_DIR="$KIT_DIR/logs"
 TS="$(date +%Y%m%d-%H%M%S)"
@@ -649,16 +653,6 @@ cmd_install() {  # cmd_install [DIR | DIR/setup.exe]
     launch_logged installer "$dir" "$exe"
 }
 
-# The installed Altium: the newest X2.EXE (Altium 18 and later, 64-bit, Program Files), else
-# DXP.EXE (Altium 17 and older, 32-bit, Program Files (x86)).
-find_altium_exe() {
-    local c="$PREFIX/drive_c" exe
-    exe="$(find "$c/Program Files/Altium" -maxdepth 2 -iname 'X2.EXE' 2>/dev/null | sort | tail -n 1)"
-    [ -n "$exe" ] || exe="$(find "$c/Program Files (x86)/Altium" "$c/Program Files/Altium" -maxdepth 2 \
-        -iname 'DXP.EXE' 2>/dev/null | sort | tail -n 1)"
-    echo "$exe"
-}
-
 select_ad26_dxmt() {
     local app source destination temporary
     [ "$(uname -m)" = x86_64 ] && [ "$(sysctl -in hw.optional.arm64)" != 1 ] \
@@ -712,39 +706,8 @@ configure_ram_mappings() {
 configure_ad26_browser() {
     [ "${AD26_CEF_FALLBACK:-1}" = "1" ] || return 0
 
-    local directory="${1#"$PREFIX"/drive_c/}" profile helper="$WINE_BIN_DIR/altium-ui-ready.exe"
-    directory="${directory%/*}"
-    # Match the selected executable to its installer record. Other versions and
-    # other installations in this prefix have separate preference keys.
-    profile="$(
-        WINEDEBUG=-all "$WINE" reg query 'HKLM\Software\Altium\Builds' /s /reg:64 2>/dev/null |
-            LC_ALL=C ALTIUM_INSTALL_PATH="C:\\${directory//\//\\}" awk '
-                function record() {
-                    if (profile ~ /^Altium Designer \{[[:xdigit:]-]+\}$/ &&
-                        tolower(installed) == "true" && version ~ /^26\./ && tolower(path) == expected) {
-                        match_count++
-                        selected = profile
-                    }
-                }
-                BEGIN { expected = tolower(ENVIRON["ALTIUM_INSTALL_PATH"]) }
-                { sub(/\r$/, "") }
-                /^HKEY_LOCAL_MACHINE\\/ {
-                    record()
-                    profile = $0
-                    sub(/^HKEY_LOCAL_MACHINE\\Software\\Altium\\Builds\\/, "", profile)
-                    installed = version = path = ""
-                    next
-                }
-                $1 == "Installed" && $2 == "REG_SZ" { installed = $3 }
-                $1 == "Version" && $2 == "REG_SZ" { version = $3 }
-                $1 == "ProgramsInstallPath" && $2 == "REG_SZ" {
-                    sub(/^[ \t]*ProgramsInstallPath[ \t]+REG_SZ[ \t]+/, "")
-                    path = $0
-                    sub(/\\$/, "", path)
-                }
-                END { record(); if (match_count == 1) print selected }
-            '
-    )"
+    local profile helper="$WINE_BIN_DIR/altium-ui-ready.exe"
+    profile="$(find_ad26_profile "$1")"
     [ -n "$profile" ] || return 0
     [ -x "$helper" ] || helper="$TOOLS_DIR/altium-ui-ready.exe"
     WINEDEBUG=-all "$WINE" "$helper" --seed-ad26-browser "$profile" </dev/null 2>/dev/null ||

@@ -20,7 +20,7 @@ def align(v, a):
     return (v + a - 1) & ~(a - 1)
 
 
-def main(src, dst, specs):
+def main(src, dst, specs, check_export=None):
     b = bytearray(open(src, "rb").read())
     pe = struct.unpack_from("<I", b, 0x3C)[0]
     assert b[pe:pe + 4] == b"PE\0\0"
@@ -53,6 +53,8 @@ def main(src, dst, specs):
      funcs_rva, names_rva, ords_rva) = struct.unpack_from("<IIHHIIIIIII", b, off(exp_rva))
     funcs = list(struct.unpack_from("<%dI" % nfuncs, b, off(funcs_rva)))
     names = [cstr(r) for r in struct.unpack_from("<%dI" % nnames, b, off(names_rva))]
+    if check_export is not None:
+        return check_export.encode() in names
     ords = list(struct.unpack_from("<%dH" % nnames, b, off(ords_rva)))
     dll_name = cstr(name_rva)
 
@@ -113,6 +115,8 @@ def main(src, dst, specs):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 4 and sys.argv[1] == "--has-export":
+        sys.exit(0 if main(sys.argv[2], None, [], sys.argv[3]) else 1)
     if len(sys.argv) < 4:
         raise SystemExit(__doc__)
     main(sys.argv[1], sys.argv[2], sys.argv[3:])
