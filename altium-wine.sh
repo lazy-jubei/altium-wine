@@ -575,6 +575,14 @@ launch_logged() {  # launch_logged LABEL WORKDIR EXE [ARGS...]
         exec "$WINE" "$@"
     ) >> "$log" 2>&1 &
     local pid=$!
+    local popup_frame_pid="" popup_frame_helper="$WINE_BIN_DIR/ad26-menu-frame.exe"
+    case "$label:${exe_name##*\\}" in
+        altium:X2.EXE|altium:x2.exe)
+            if [ -f "$popup_frame_helper" ]; then
+                WINEDEBUG=-all "$WINE" "$popup_frame_helper" >> "$log" 2>&1 &
+                popup_frame_pid=$!
+            fi ;;
+    esac
     local n=0
     while kill -0 "$pid" 2>/dev/null; do
         sleep 2
@@ -586,6 +594,10 @@ launch_logged() {  # launch_logged LABEL WORKDIR EXE [ARGS...]
             printf '   ... %ss elapsed, log %s%s\n' "$n" "$(du -h "$log" | cut -f1 | tr -d ' ')" "${last:+, last error: $last}"
         fi
     done
+    if [ -n "$popup_frame_pid" ]; then
+        kill "$popup_frame_pid" 2>/dev/null || true
+        wait "$popup_frame_pid" 2>/dev/null || true
+    fi
     local rc=0
     if [ "$INTERRUPTED" != "1" ]; then
         wait "$pid"; rc=$?

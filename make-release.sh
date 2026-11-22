@@ -31,7 +31,7 @@ done
 case "$VERSION" in *[!A-Za-z0-9._-]*) echo "Version may only use letters, digits, . _ -" >&2; exit 1 ;; esac
 OUT="${OUT:-$KIT_DIR/dist/$VERSION}"
 
-MODULE_FILES="altium-gdi-copy-arm64 altium-ui-ready.exe altium-browser-launch.exe winemac.so win32u.so d2d1.dll dwrite.dll winhttp.dll gdiplus.dll gdiplus-i386.dll msado15.dll msado15-i386.dll d3dx9_43-i386.dll kernelbase-i386.dll d3d9-i386.dll wined3d-i386.dll wow64cpu.dll user32.dll wineserver SHA256SUMS"
+MODULE_FILES="ad26-menu-frame.exe altium-gdi-copy-arm64 altium-ui-ready.exe altium-browser-launch.exe winemac.so win32u.so d2d1.dll dwrite.dll winhttp.dll gdiplus.dll gdiplus-i386.dll msado15.dll msado15-i386.dll d3dx9_43-i386.dll kernelbase-i386.dll d3d9-i386.dll wined3d-i386.dll wow64cpu.dll user32.dll wineserver SHA256SUMS"
 for f in $MODULE_FILES; do
     [ -f "$MODULES/$f" ] || { echo "$MODULES/$f missing (make it with build-patched-wine.sh --export)" >&2; exit 1; }
 done

@@ -91,6 +91,7 @@ server/wineserver|../../bin/wineserver|wineserver"
 NATIVE_MODULE="altium-gdi-copy-arm64"
 READINESS_MODULE="altium-ui-ready.exe"
 BROWSER_MODULE="altium-browser-launch.exe"
+MENU_FRAME_MODULE="ad26-menu-frame.exe"
 BUILT_MODULES="$NATIVE_MODULE $READINESS_MODULE"
 for t in $TARGETS; do BUILT_MODULES="$BUILT_MODULES ${t##*|}"; done
 
@@ -226,12 +227,14 @@ build_modules() {
         -o "$MODULES_DIR/$READINESS_MODULE" -luser32 -ladvapi32 || die "UI readiness helper build failed"
     "$llvm/bin/x86_64-w64-mingw32-clang" -O2 -s -municode -mwindows "$KIT_DIR/tools/altium-browser-launch.c" \
         -o "$MODULES_DIR/$BROWSER_MODULE" -lshell32 || die "Installer browser helper build failed"
+    "$llvm/bin/x86_64-w64-mingw32-clang" -O2 -s "$KIT_DIR/tools/ad26-menu-frame.c" \
+        -o "$MODULES_DIR/$MENU_FRAME_MODULE" -lgdi32 || die "Menu frame helper build failed"
     codesign -s - -f "$MODULES_DIR/$NATIVE_MODULE" 2>/dev/null || die "Could not sign native GDI worker"
     codesign -s - -f "$MODULES_DIR/wineserver" 2>/dev/null || die "Could not sign the rebuilt wineserver"
     # The unstripped d3dx9 is 2.6 MB (the stock one is 0.6 MB); the other modules ship as built.
     "$llvm/bin/llvm-strip" --strip-unneeded "$MODULES_DIR/d3dx9_43-i386.dll" 2>/dev/null || true
     # shellcheck disable=SC2086
-    ( cd "$MODULES_DIR" && shasum -a 256 $BUILT_MODULES "$BROWSER_MODULE" > SHA256SUMS )
+    ( cd "$MODULES_DIR" && shasum -a 256 $BUILT_MODULES "$BROWSER_MODULE" "$MENU_FRAME_MODULE" > SHA256SUMS )
 }
 
 if [ -n "$MODULES_DIR" ]; then
@@ -309,6 +312,9 @@ chmod 755 "$BINW/$READINESS_MODULE"
 if [ -f "$MODULES_DIR/$BROWSER_MODULE" ]; then
     install -m 755 "$MODULES_DIR/$BROWSER_MODULE" "$BINW/$BROWSER_MODULE" || die "Copy installer browser helper failed"
 fi
+if [ -f "$MODULES_DIR/$MENU_FRAME_MODULE" ]; then
+    install -m 755 "$MODULES_DIR/$MENU_FRAME_MODULE" "$BINW/$MENU_FRAME_MODULE" || die "Copy menu frame helper failed"
+fi
 chmod 755 "$BINW/wineserver" || die "Could not set wineserver permissions"
 codesign -s - -f "$BINW/wineserver" 2>/dev/null || die "Could not sign wineserver"
 
@@ -345,7 +351,8 @@ cp "$WINE_ROOT/VERSION" "$NEW/VERSION"
         x86_64-windows/gdiplus.dll i386-windows/gdiplus.dll x86_64-windows/msado15.dll i386-windows/msado15.dll i386-windows/d3dx9_43.dll i386-windows/kernelbase.dll i386-windows/d3d9.dll i386-windows/wined3d.dll \
         x86_64-windows/wow64cpu.dll x86_64-windows/user32.dll ) | sed 's/^/  /'
     ( cd "$BINW" && shasum -a 256 wineserver "$NATIVE_MODULE" "$READINESS_MODULE"
-      if [ -f "$BROWSER_MODULE" ]; then shasum -a 256 "$BROWSER_MODULE"; fi ) | sed 's/^/  /'
+      if [ -f "$BROWSER_MODULE" ]; then shasum -a 256 "$BROWSER_MODULE"; fi
+      if [ -f "$MENU_FRAME_MODULE" ]; then shasum -a 256 "$MENU_FRAME_MODULE"; fi ) | sed 's/^/  /'
     if [ -d "$MODULES_DIR/dxmt" ]; then
         echo "DXMT package inputs (sha256):"
         ( cd "$MODULES_DIR" && shasum -a 256 $DXMT_FILES ) | sed 's/^/  /'
@@ -383,6 +390,10 @@ if [ -n "$EXPORT_DIR" ]; then
     if [ -f "${L%/lib/wine}/bin/$BROWSER_MODULE" ]; then
         cp "${L%/lib/wine}/bin/$BROWSER_MODULE" "$EXPORT_DIR/" || die "Installer browser helper export failed"
         export_modules="$export_modules $BROWSER_MODULE"
+    fi
+    if [ -f "${L%/lib/wine}/bin/$MENU_FRAME_MODULE" ]; then
+        cp "${L%/lib/wine}/bin/$MENU_FRAME_MODULE" "$EXPORT_DIR/" || die "Menu frame helper export failed"
+        export_modules="$export_modules $MENU_FRAME_MODULE"
     fi
     cp "$PATCHED_ROOT/PATCHES" "$EXPORT_DIR/PATCHES"
     # shellcheck disable=SC2086
