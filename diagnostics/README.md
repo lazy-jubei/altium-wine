@@ -278,4 +278,6 @@ portability-enumeration path without requiring Vulkan SDK headers.
 
 `linux-setup-repeat-check.py /path/to/runner` uses a temporary prefix and Xvfb
 to check that an existing wineserver does not retain the setup lock, and that a
-second setup finishes while that server remains alive.
+second setup finishes while that server remains alive. It also exercises the
+period before the server flushes `system.reg`, when completed configuration
+must not run again against the previous display session.

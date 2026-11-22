@@ -52,8 +52,16 @@ with tempfile.TemporaryDirectory(prefix='aw-setup-repeat-') as temporary:
                 continue
         if not found:
             raise RuntimeError('No surviving wineserver: test would not cover the regression')
+        # The live server can finish setup before its buffered registry reaches
+        # system.reg. Exercise that real first-run state deterministically.
+        registry = prefix / 'system.reg'
+        if registry.exists():
+            registry.rename(prefix / 'system.reg.before-repeat')
+        setup_logs = set((root / 'logs').glob('setup.*.log'))
         subprocess.run(command, env=env, check=True, timeout=10)
-        print('PASS: repeated setup completed with the original wineserver alive')
+        if set((root / 'logs').glob('setup.*.log')) != setup_logs:
+            raise RuntimeError('Completed setup was unnecessarily repeated before registry flush')
+        print('PASS: repeated setup completed with the original wineserver alive and registry not yet flushed')
     finally:
         subprocess.run(server + ['-k'], env=env, check=False)
         subprocess.run(server + ['-w'], env=env, check=True, timeout=20)

@@ -207,7 +207,9 @@ setup() (
     # wineserver can outlive setup. It must not inherit and retain this lock.
     patch_user32
     apply_built_modules
-    [[ -f "$PREFIX/.altium-linux-setup" && -f "$PREFIX/system.reg" ]] && return
+    # wineserver may still have its registry buffered when setup finishes.
+    # Reconfiguring that live prefix can wait on its previous display session.
+    [[ -f "$PREFIX/.altium-linux-setup" && -f "$PREFIX/drive_c/windows/system32/kernel32.dll" ]] && return
     local log
     log="$(mktemp --suffix=.log "$LOGS/setup.XXXXXX")"
     printf 'Preparing %s (log %s)\n' "$PREFIX" "$log"
