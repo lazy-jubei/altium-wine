@@ -100,7 +100,7 @@ get_mingw() {
     printf '%s\n' "$compiler"
 }
 
-replace_module() (
+replace_file() (
     local source="$1" destination="$2" stage
     if cmp -s "$source" "$destination"; then return; fi
     stage="$(mktemp -- "$destination.XXXXXX")"
@@ -122,7 +122,7 @@ patch_user32() (
         mv -T -- "$stage" "$dll"
     fi
     # Existing prefixes already have a copy of the old builtin.
-    if [[ -f $installed ]]; then replace_module "$dll" "$installed"; fi
+    if [[ -f $installed ]]; then replace_file "$dll" "$installed"; fi
 )
 
 apply_built_modules() {
@@ -133,8 +133,8 @@ apply_built_modules() {
         [[ -s $module ]] || continue
         dll="$ROOT/runners/$WINE_PACKAGE/lib/wine/x86_64-windows/$name.dll"
         installed="$PREFIX/drive_c/windows/system32/$name.dll"
-        replace_module "$module" "$dll"
-        if [[ -f $installed ]]; then replace_module "$module" "$installed"; fi
+        replace_file "$module" "$dll"
+        if [[ -f $installed ]]; then replace_file "$module" "$installed"; fi
     done
 }
 
@@ -193,7 +193,7 @@ build_wine_modules() (
         done
         make -j "${ALTIUM_WINE_BUILD_JOBS:-$(nproc)}" "${targets[@]}" || exit 1
         for name in winhttp d2d1 dwrite; do
-            replace_module "$build/dlls/$name/x86_64-windows/$name.dll" "$output/$name.dll"
+            replace_file "$build/dlls/$name/x86_64-windows/$name.dll" "$output/$name.dll"
         done
     } >>"$log" 2>&1
     printf 'Built Wine modules in %s. Restart Designer to load them.\n' "$output"
@@ -414,7 +414,7 @@ desktop_quote() {
 }
 
 make_launcher() (
-    local exe directory desktop temporary
+    local exe directory desktop temporary extracted icon=""
     if ! exe="$(get_altium)" || [[ -z $exe ]]; then
         die 'Install Altium before creating the launcher.'
     fi
@@ -422,9 +422,15 @@ make_launcher() (
     desktop="$directory/altium-wine-linux.desktop"
     mkdir -p -- "$directory"
     temporary="$(mktemp --suffix=.desktop "$directory/.altium.XXXXXX")"
-    trap 'rm -f -- "$temporary"' EXIT
+    trap 'rm -f -- "$temporary" "$temporary.png" "$temporary.ico"' EXIT
+    if extracted="$(python3 "$KIT_DIR/tools/exe-icon.py" "$exe" "$temporary" 2>/dev/null)"; then
+        icon="$ROOT/altium-wine-launcher.${extracted##*.}"
+        mkdir -p -- "$ROOT"
+        replace_file "$extracted" "$icon"
+    fi
     {
         printf '[Desktop Entry]\nVersion=1.0\nType=Application\nName=Altium Designer (Wine)\n'
+        if [[ -n $icon ]]; then printf 'Icon=%s\n' "${icon//\\/\\\\}"; fi
         printf 'Terminal=false\nCategories=Development;Electronics;\n'
         printf 'Exec=/usr/bin/env %s' "$(desktop_quote "ALTIUM_WINE_ROOT=$ROOT")"
         local setting

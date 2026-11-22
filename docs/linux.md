@@ -31,7 +31,8 @@ At the end, clear **Run Altium Designer** and click **Finish** so the kit
 can apply its graphics settings on first launch.
 
 Use **Altium Designer (Wine)** from the application menu, or use the launcher
-from a terminal.
+from a terminal. The menu shortcut uses the icon from the installed Altium
+executable when available.
 
 ```sh
 bash altium-wine.sh run

@@ -3,8 +3,8 @@
 
 Usage: exe-icon.py <file.exe> <out-base>   -> prints the path written (<out-base>.png or .ico)
 
-Used by `altium-wine.sh launcher` to give the Mac launcher app Altium's icon. Exits non-zero
-(and the launcher goes without an icon) if the exe has no icon resources.
+Used by `altium-wine.sh launcher` on macOS and Linux. Exits non-zero if the exe
+has no icon resources.
 """
 import struct
 import sys
