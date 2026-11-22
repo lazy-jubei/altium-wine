@@ -1,2 +1,2 @@
-# Unified patch context lines include a required leading space.
-patches/*.patch whitespace=-blank-at-eol
+# Preserve unified-diff context indentation and upstream mail-patch footers.
+patches/*.patch whitespace=-blank-at-eol,-space-before-tab,-blank-at-eof

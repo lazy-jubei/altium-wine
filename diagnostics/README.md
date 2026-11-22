@@ -244,3 +244,38 @@ x86_64-w64-mingw32-gcc d3d11-gdi-rect.c -O2 -o gdi-rect.exe \
 Run beside either renderer's DLLs with the native overrides above. The shipped
 DXVK build fails the three partial updates (32, 80 and 92 bad pixels).
 `patches/dxvk-ad26-gdi.patch` passes all four 256-pixel checks.
+
+## Metal/GDI transparent child composition
+
+`metal-gdi-composition.c` uses an ordinary D3D11 swapchain and two GDI children.
+It checks a transparent child's background after rendering stops, a sibling
+covers the viewport, and exactly one final frame changes its color. It contains
+no Altium project or application hooks. Build as a GUI executable so macOS
+registers the Wine window normally:
+
+```sh
+x86_64-w64-mingw32-clang -O2 -mwindows -DUNICODE -D_UNICODE \
+  metal-gdi-composition.c -o metal-gdi-composition.exe \
+  -ld3d11 -ldxgi -ldxguid -lgdi32 -luser32
+```
+
+Run with the paired patched Wine modules, DXMT and
+`WINE_MAC_GDI_READBACK=1`, then pass `--self-test` or `--late-child-test`.
+Exit zero requires a green corner and yellow center.
+`WINE_TEST_GDI_READBACK_DELAY_MS=100` or `250` exercises a GPU-copy completion
+that arrives after subsequent frames. The DXMT cases passed; the DXVK final
+frame case still exposes a delayed Metal presentation callback and is not
+enabled by default.
+
+`check-metal-gdi-failure-paths.py /path/to/patched-wine-source` compiles the actual
+readback header with Metal factory/allocation doubles and checks cleanup after
+command-buffer, encoder, pixel-cache and crop allocation failures. It requires
+macOS and Xcode command line tools; no Wine prefix or GPU work is used.
+
+`vulkan-device-check.c` loads `vulkan-1.dll` and requires instance creation plus
+at least one physical device. It checks the rebuilt Win32u's host-loader and
+portability-enumeration path without requiring Vulkan SDK headers.
+
+`linux-setup-repeat-check.py /path/to/runner` uses a temporary prefix and Xvfb
+to check that an existing wineserver does not retain the setup lock, and that a
+second setup finishes while that server remains alive.

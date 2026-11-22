@@ -62,3 +62,18 @@ Copyright (c) 2023-2026 Feifan He for CodeWeavers and DXMT contributors.
 The optional DXMT components include the upstream LICENSE, LICENSE.OLD and
 COPYING.LIB files. Source inputs and local modifications are documented in
 docs/wine-sources.md.
+
+FreeType headers used when building win32u
+Copyright (c) 1996-2025 The FreeType Project (https://freetype.org).
+The pinned FreeType source retains its FTL.TXT and GPLv2.TXT license files.
+Only headers are used by this build; the stock Wine bundle supplies the library.
+Source revision and digest are recorded in docs/wine-sources.md.
+
+patches/0052-win32u-host-vulkan-portability.patch
+Upstream Wine patch by Dean M Greer (Gcenx), retained with its original
+author and commit metadata, as applied in the stock Gcenx 11.16 bundle.
+GNU LGPL 2.1 or later. Source: Wine merge request 11538.
+
+Patch 0053 retains the Wine Staging 11.16 Win32u baseline by Alistair
+Leslie-Hughes, Gabriel Ivăncescu and Dmitry Timoshkov, under LGPL 2.1 or later.
+Original author, commit and patchset references are preserved in the patch.

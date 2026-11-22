@@ -1,0 +1,1001 @@
+Subject: winemac: compose transparent GDI children over completed Metal frames
+
+--- a/dlls/win32u/dce.c
++++ b/dlls/win32u/dce.c
+@@ -1393,6 +1393,7 @@
+     if (set_dce_flags( dce->hdc, DCHF_VALIDATEVISRGN )) update_vis_rgn = TRUE;  /* DC was dirty */
+ 
+     if (update_vis_rgn) update_visible_region( dce );
++    if (user_driver->pAcquireWindowDC) user_driver->pAcquireWindowDC( dce->hdc, hwnd, flags );
+ 
+     TRACE( "(%p,%p,0x%x): returning %p%s\n", hwnd, clip_rgn, flags, dce->hdc,
+            update_vis_rgn ? " (updated)" : "" );
+--- a/dlls/winemac.drv/Makefile.in
++++ b/dlls/winemac.drv/Makefile.in
+@@ -1,5 +1,7 @@
+ MODULE    = winemac.drv
+ UNIXLIB   = winemac.so
++# Zeroing weak references break drawable/layer completion retain cycles.
++UNIX_CFLAGS = -fobjc-weak
+ IMPORTS   = uuid rpcrt4 user32 gdi32 win32u
+ DELAYIMPORTS = ole32 shell32 imm32
+ UNIX_LIBS    = \
+--- a/dlls/winemac.drv/cocoa_event.m
++++ b/dlls/winemac.drv/cocoa_event.m
+@@ -203,6 +203,23 @@
+             return ((MacDrvEvent*)obj)->event->deliver <= 0;
+         }];
+         [events removeObjectsAtIndexes:indexes];
++
++        /* A ready event consumes the latest cache, so one outstanding event
++         * per source is enough even when its Wine UI thread is busy. */
++        if (event->event->type == GDI_READBACK_READY)
++        {
++            for (MacDrvEvent *queued in events)
++            {
++                if (queued->event->type == GDI_READBACK_READY &&
++                    queued->event->gdi_readback_ready.target == event->event->gdi_readback_ready.target &&
++                    queued->event->gdi_readback_ready.source == event->event->gdi_readback_ready.source)
++                {
++                    [eventsLock unlock];
++                    [self signalEventAvailable];
++                    return;
++                }
++            }
++        }
+ 
+         if ((event->event->type == MOUSE_MOVED_RELATIVE ||
+              event->event->type == MOUSE_MOVED_ABSOLUTE) &&
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -412,6 +412,7 @@
+     - (void) wine_setBackingSize:(const int*)newBackingSize;
+ 
+     - (WineMetalView*) newMetalViewWithDevice:(id<MTLDevice>)device;
++    - (WineMetalView*) metalViewForReadback;
+     - (void) addCALayerHostViewWithContextId:(CAContextID)contextId;
+     - (void) removeCALayerHostView:(CAContextID)contextId;
+ 
+@@ -503,6 +504,8 @@
+ 
+ 
+ @implementation WineContentView
++
++    - (WineMetalView*) metalViewForReadback { return _metalView; }
+ 
+ @synthesize everHadGLContext = _everHadGLContext;
+ 
+@@ -1022,6 +1025,20 @@
+ 
+ @implementation WineMetalLayer
+ 
++- (instancetype)init
++{
++    if ((self = [super init]) && getenv("WINE_TEST_GDI_BASE_LIFETIME"))
++        fprintf(stderr, "[metal-base-lifetime] init layer=%p\n", self);
++    return self;
++}
++
++- (void)dealloc
++{
++    if (getenv("WINE_TEST_GDI_BASE_LIFETIME"))
++        fprintf(stderr, "[metal-base-lifetime] dealloc layer=%p\n", self);
++    [super dealloc];
++}
++
+ - (id<CAMetalDrawable>) nextDrawable
+ {
+     if (drawable_callback) drawable_callback(drawable_context);
+@@ -1030,6 +1047,8 @@
+ 
+ @end
+ 
++
++#include "gdi_readback.h"
+ 
+ @implementation WineMetalView
+ 
+@@ -1047,6 +1066,8 @@
+ 
+     - (void) dealloc
+     {
++        if (getenv("WINE_TEST_GDI_BASE_LIFETIME"))
++            fprintf(stderr, "[metal-base-lifetime] dealloc view=%p layer=%p\n", self, self.layer);
+         [_device release];
+         [super dealloc];
+     }
+@@ -1059,9 +1080,11 @@
+ 
+     - (CALayer*) makeBackingLayer
+     {
+-        CAMetalLayer *layer = [WineMetalLayer layer];
++        const char *option = getenv("WINE_MAC_GDI_READBACK");
++        BOOL readback = option && atoi(option);
++        CAMetalLayer *layer = readback ? [WineGDIReadbackLayer layer] : [WineMetalLayer layer];
+         layer.device = _device;
+-        layer.framebufferOnly = YES;
++        layer.framebufferOnly = !readback;
+         layer.magnificationFilter = kCAFilterNearest;
+         layer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+         layer.contentsScale = retina_on ? 2.0 : 1.0;
+@@ -3886,6 +3909,9 @@
+     OnMainThread(^{
+         NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
+         WineWindow* window = (WineWindow*)[view window];
++        CAMetalLayer *layer = (CAMetalLayer *)view.metalViewForReadback.layer;
++        if ([layer isKindOfClass:[WineGDIReadbackLayer class]])
++            [(WineGDIReadbackLayer *)layer stopReadback];
+ 
+ #pragma clang diagnostic push
+ #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+@@ -4029,6 +4055,7 @@
+ }
+ }
+ 
++
+ /***********************************************************************
+  *              macdrv_set_view_hidden
+  */
+@@ -4138,6 +4165,11 @@
+ {
+     WineMetalView* view = (WineMetalView*)v;
+     OnMainThread(^{
++        if (getenv("WINE_TEST_GDI_BASE_LIFETIME"))
++            fprintf(stderr, "[metal-base-lifetime] release view=%p retain=%lu\n", view, (unsigned long)view.retainCount);
++        CAMetalLayer *layer = (CAMetalLayer *)view.layer;
++        if ([layer isKindOfClass:[WineGDIReadbackLayer class]])
++            [(WineGDIReadbackLayer *)layer stopReadback];
+         [view removeFromSuperview];
+         [view release];
+     });
+@@ -4456,3 +4488,52 @@
+             [[window contentView] clearMarkedText];
+     });
+ }
++
++macdrv_view macdrv_retain_readback_view(macdrv_view view)
++{
++    return (macdrv_view)[(WineContentView *)view retain];
++}
++
++void macdrv_release_readback_view(macdrv_view view)
++{
++    OnMainThreadAsync(^{ [(WineContentView *)view release]; });
++}
++
++void macdrv_set_view_readback_region(macdrv_view opaque_view, CGRect rect, void *target)
++{
++    WineContentView *view = (WineContentView *)opaque_view;
++    OnMainThread(^{
++        CAMetalLayer *layer = (CAMetalLayer *)view.metalViewForReadback.layer;
++        if ([layer isKindOfClass:[WineGDIReadbackLayer class]])
++        {
++            WineWindow *window = (WineWindow *)[view window];
++            [(WineGDIReadbackLayer *)layer setRequestedRect:rect ready:^{
++                macdrv_event *event = macdrv_create_event(GDI_READBACK_READY, window);
++                event->gdi_readback_ready.target = target;
++                event->gdi_readback_ready.source = opaque_view;
++                [[window queue] postEvent:event];
++                macdrv_release_event(event);
++            }];
++        }
++    });
++}
++
++void *macdrv_copy_view_readback(macdrv_view opaque_view, CGRect *rect, uint64_t *serial, unsigned int *stride)
++{
++    WineContentView *view = (WineContentView *)opaque_view;
++    __block NSData *snapshot = nil;
++    __block NSUInteger row_bytes = 0;
++    void *result = NULL;
++    OnMainThread(^{
++        CAMetalLayer *layer = (CAMetalLayer *)view.metalViewForReadback.layer;
++        if ([layer isKindOfClass:[WineGDIReadbackLayer class]])
++            snapshot = [(WineGDIReadbackLayer *)layer copyPixelsForRect:rect since:serial stride:&row_bytes];
++    });
++    if (snapshot && (result = malloc(snapshot.length)))
++    {
++        memcpy(result, snapshot.bytes, snapshot.length);
++        *stride = row_bytes;
++    }
++    [snapshot release];
++    return result;
++}
+--- a/dlls/winemac.drv/event.c
++++ b/dlls/winemac.drv/event.c
+@@ -75,6 +75,7 @@
+         "WINDOW_MINIMIZE_REQUESTED",
+         "WINDOW_RESIZE_ENDED",
+         "WINDOW_RESTORE_REQUESTED",
++        "GDI_READBACK_READY",
+     };
+     C_ASSERT(ARRAYSIZE(event_names) == NUM_EVENT_TYPES);
+ 
+@@ -91,6 +92,7 @@
+     macdrv_event_mask event_mask = 0;
+ 
+     if ((mask & QS_ALLINPUT) == QS_ALLINPUT) return -1;
++    if (mask & (QS_PAINT | QS_POSTMESSAGE)) event_mask |= event_mask_for_type(GDI_READBACK_READY);
+ 
+     if (mask & QS_HOTKEY)
+         event_mask |= event_mask_for_type(HOTKEY_PRESS);
+@@ -384,6 +386,9 @@
+ 
+     switch (event->type)
+     {
++    case GDI_READBACK_READY:
++        macdrv_gdi_readback_ready(event->gdi_readback_ready.target, event->gdi_readback_ready.source);
++        break;
+     case APP_ACTIVATED:
+         macdrv_app_activated();
+         break;
+--- a/dlls/winemac.drv/gdi.c
++++ b/dlls/winemac.drv/gdi.c
+@@ -251,6 +251,7 @@
+     .pDesktopWindowProc = macdrv_DesktopWindowProc,
+     .pDestroyCursorIcon = macdrv_DestroyCursorIcon,
+     .pDestroyWindow = macdrv_DestroyWindow,
++    .pAcquireWindowDC = macdrv_AcquireWindowDC,
+     .pUpdateDisplayDevices = macdrv_UpdateDisplayDevices,
+     .pGetCursorPos = macdrv_GetCursorPos,
+     .pGetKeyboardLayoutList = macdrv_GetKeyboardLayoutList,
+--- /dev/null
++++ b/dlls/winemac.drv/gdi_readback.h
+@@ -0,0 +1,330 @@
++/* Experimental asynchronous readback for GDI/accelerated child composition. */
++#include <pthread.h>
++#include <stdint.h>
++#include <unistd.h>
++
++static unsigned int readback_live_layers;
++
++@interface WineGDIReadbackLayer : WineMetalLayer
++{
++    BOOL readback_initialized;
++    pthread_mutex_t readback_lock;
++    id<MTLCommandQueue> readback_queue;
++    NSData *readback_pixels;
++    NSUInteger readback_stride;
++    CGRect readback_rect, requested_rect;
++    uint64_t readback_serial, presented_serial;
++    BOOL readback_notification_pending;
++    BOOL readback_pending;
++    BOOL readback_stopped;
++    id<MTLTexture> last_texture;
++    id<CAMetalDrawable> last_drawable;
++    void (^readback_ready)(void);
++}
++- (void)captureTexture:(id<MTLTexture>)texture drawable:(id<CAMetalDrawable>)drawable serial:(uint64_t)serial;
++- (void)recordPresentedTexture:(id<MTLTexture>)texture drawable:(id<CAMetalDrawable>)drawable;
++- (void)finishReadbackBuffer:(id<MTLBuffer>)buffer crop:(CGRect)crop bounds:(CGRect)bounds serial:(uint64_t)serial stride:(NSUInteger)stride status:(MTLCommandBufferStatus)status;
++- (void)initializeReadback;
++- (void)captureLastFrame;
++- (void)stopReadback;
++- (void)setRequestedRect:(CGRect)rect ready:(void (^)(void))ready;
++- (NSData *)copyPixelsForRect:(CGRect *)rect since:(uint64_t *)serial stride:(NSUInteger *)stride;
++@end
++
++@implementation WineGDIReadbackLayer
++- (void)initializeReadback
++{
++    if (readback_initialized) return;
++    pthread_mutex_init(&readback_lock, NULL);
++    readback_rect = requested_rect = CGRectNull;
++    readback_initialized = YES;
++    unsigned int alive = __atomic_add_fetch(&readback_live_layers, 1, __ATOMIC_RELAXED);
++    if (getenv("WINE_TEST_GDI_READBACK_LIFETIME"))
++        fprintf(stderr, "[gdi-readback-lifetime] created alive=%u\n", alive);
++}
++
++- (instancetype)init
++{
++    if ((self = [super init])) [self initializeReadback];
++    return self;
++}
++
++- (instancetype)initWithLayer:(id)layer
++{
++    if ((self = [super initWithLayer:layer])) [self initializeReadback];
++    return self;
++}
++
++- (void)dealloc
++{
++    [self stopReadback];
++    [readback_queue release];
++    [readback_pixels release];
++    if (readback_initialized)
++    {
++        pthread_mutex_destroy(&readback_lock);
++        unsigned int alive = __atomic_sub_fetch(&readback_live_layers, 1, __ATOMIC_RELAXED);
++        if (getenv("WINE_TEST_GDI_READBACK_LIFETIME"))
++            fprintf(stderr, "[gdi-readback-lifetime] destroyed alive=%u\n", alive);
++    }
++    [super dealloc];
++}
++
++- (id<CAMetalDrawable>)nextDrawable
++{
++    id<CAMetalDrawable> drawable = [super nextDrawable];
++    id<MTLTexture> texture = drawable.texture;
++    __weak WineGDIReadbackLayer *weak_layer = self;
++    if (drawable)
++        [drawable addPresentedHandler:^(id<MTLDrawable> completed) {
++            WineGDIReadbackLayer *layer = [weak_layer retain];
++            if (layer)
++            {
++                [layer recordPresentedTexture:texture drawable:(id<CAMetalDrawable>)completed];
++                [layer release];
++            }
++        }];
++    return drawable;
++}
++
++- (void)recordPresentedTexture:(id<MTLTexture>)texture drawable:(id<CAMetalDrawable>)drawable
++{
++    id<MTLTexture> previous_texture = nil;
++    id<CAMetalDrawable> previous_drawable = nil;
++    uint64_t serial;
++    pthread_mutex_lock(&readback_lock);
++    serial = ++presented_serial;
++    if (!readback_stopped)
++    {
++        previous_texture = last_texture;
++        previous_drawable = last_drawable;
++        last_texture = [texture retain];
++        last_drawable = [drawable retain];
++    }
++    pthread_mutex_unlock(&readback_lock);
++    [previous_texture release];
++    [previous_drawable release];
++    [self captureTexture:texture drawable:drawable serial:serial];
++}
++
++- (void)stopReadback
++{
++    id<MTLTexture> texture;
++    id<CAMetalDrawable> drawable;
++    id<MTLCommandQueue> queue;
++    NSData *pixels;
++    void (^ready)(void);
++    if (!readback_initialized) return;
++    pthread_mutex_lock(&readback_lock);
++    if (!readback_stopped && getenv("WINE_TEST_GDI_READBACK_LIFETIME"))
++        fprintf(stderr, "[gdi-readback-lifetime] stopping layer=%p retain=%lu\n", self, (unsigned long)self.retainCount);
++    readback_stopped = YES;
++    texture = last_texture; last_texture = nil;
++    drawable = last_drawable; last_drawable = nil;
++    ready = readback_ready; readback_ready = nil;
++    queue = readback_queue; readback_queue = nil;
++    pixels = readback_pixels; readback_pixels = nil;
++    readback_rect = requested_rect = CGRectNull;
++    pthread_mutex_unlock(&readback_lock);
++    [queue release];
++    [pixels release];
++    [texture release];
++    [drawable release];
++    [ready release];
++}
++
++- (void)captureLastFrame
++{
++    id<MTLTexture> texture;
++    id<CAMetalDrawable> drawable;
++    uint64_t serial;
++    pthread_mutex_lock(&readback_lock);
++    serial = presented_serial;
++    texture = [last_texture retain];
++    drawable = [last_drawable retain];
++    pthread_mutex_unlock(&readback_lock);
++    if (texture && drawable) [self captureTexture:texture drawable:drawable serial:serial];
++    [texture release];
++    [drawable release];
++}
++
++- (void)setRequestedRect:(CGRect)rect ready:(void (^)(void))ready
++{
++    void (^previous)(void);
++    pthread_mutex_lock(&readback_lock);
++    if (readback_stopped || CGRectEqualToRect(rect, requested_rect))
++    {
++        pthread_mutex_unlock(&readback_lock);
++        return;
++    }
++    requested_rect = rect;
++    previous = readback_ready;
++    readback_ready = !CGRectIsNull(rect) && !CGRectIsEmpty(rect) ? [ready copy] : nil;
++    pthread_mutex_unlock(&readback_lock);
++    [previous release];
++    [self captureLastFrame];
++}
++
++- (void)captureTexture:(id<MTLTexture>)texture drawable:(id<CAMetalDrawable>)drawable serial:(uint64_t)serial
++{
++    @autoreleasepool
++    {
++        NSUInteger width, height, stride;
++        CGRect crop;
++        MTLPixelFormat format = texture.pixelFormat;
++        if (format != MTLPixelFormatBGRA8Unorm && format != MTLPixelFormatBGRA8Unorm_sRGB) return;
++        pthread_mutex_lock(&readback_lock);
++        CGRect bounds = CGRectMake(0, 0, texture.width, texture.height);
++        crop = CGRectIntersection(CGRectIntegral(requested_rect), bounds);
++        if (readback_stopped || readback_pending || serial != presented_serial || CGRectIsNull(crop) || CGRectIsEmpty(crop) ||
++            crop.size.width > 8192 || crop.size.height > 8192)
++        {
++            pthread_mutex_unlock(&readback_lock);
++            return;
++        }
++        width = crop.size.width;
++        height = crop.size.height;
++        stride = (width * 4 + 255) & ~255;
++        if (!readback_queue) readback_queue = [self.device newCommandQueue];
++        id<MTLBuffer> buffer = [self.device newBufferWithLength:stride * height options:MTLResourceStorageModeShared];
++        if (!readback_queue || !buffer)
++        {
++            pthread_mutex_unlock(&readback_lock);
++            [buffer release];
++            return;
++        }
++        readback_pending = YES;
++        id<MTLCommandQueue> queue = [readback_queue retain];
++        pthread_mutex_unlock(&readback_lock);
++
++        void *held_drawable = (void *)[drawable retain];
++        __weak WineGDIReadbackLayer *weak_layer = self;
++        id<MTLCommandBuffer> command = [queue commandBuffer];
++        id<MTLBlitCommandEncoder> encoder = [command blitCommandEncoder];
++        if (!encoder)
++        {
++            /* Metal can fail command/encoder allocation. No completion will
++             * release our drawable or clear the single-copy gate in that
++             * case. Leave retrying to the next present/request, rather than
++             * spinning while the device is under resource pressure. */
++            [self finishReadbackBuffer:buffer crop:crop bounds:bounds serial:serial stride:stride
++                               status:MTLCommandBufferStatusError];
++            [(id)held_drawable release];
++            [queue release];
++            [buffer release];
++            return;
++        }
++        [encoder copyFromTexture:texture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(crop.origin.x, crop.origin.y, 0)
++                      sourceSize:MTLSizeMake(width, height, 1) toBuffer:buffer destinationOffset:0
++           destinationBytesPerRow:stride destinationBytesPerImage:stride * height];
++        [encoder endEncoding];
++        [command addCompletedHandler:^(id<MTLCommandBuffer> completed) {
++            @autoreleasepool
++            {
++                const char *test_delay = getenv("WINE_TEST_GDI_READBACK_DELAY_MS");
++                int delay = test_delay ? atoi(test_delay) : 0;
++                if (delay > 0 && delay <= 250) usleep(delay * 1000);
++                WineGDIReadbackLayer *layer = [weak_layer retain];
++                if (layer)
++                {
++                    [layer finishReadbackBuffer:buffer crop:crop bounds:bounds serial:serial stride:stride status:completed.status];
++                    [layer release];
++                }
++                [(id)held_drawable release];
++            }
++        }];
++        [command commit];
++        [queue release];
++        [buffer release];
++    }
++}
++
++- (void)finishReadbackBuffer:(id<MTLBuffer>)buffer crop:(CGRect)crop bounds:(CGRect)bounds serial:(uint64_t)serial stride:(NSUInteger)stride status:(MTLCommandBufferStatus)status
++{
++    void (^ready)(void) = nil;
++    BOOL retry = NO;
++    pthread_mutex_lock(&readback_lock);
++    if (!readback_stopped && status == MTLCommandBufferStatusCompleted)
++    {
++        NSData *pixels = [[NSData alloc] initWithBytes:buffer.contents length:stride * (NSUInteger)crop.size.height];
++        if (!pixels)
++        {
++            readback_pending = NO;
++            pthread_mutex_unlock(&readback_lock);
++            return;
++        }
++        [readback_pixels release];
++        readback_pixels = pixels;
++        readback_rect = crop;
++        readback_stride = stride;
++        if (++readback_serial == 1)
++        {
++            const unsigned char *sample = pixels.bytes;
++            fprintf(stderr, "[gdi-readback] cached %lux%lu stride=%lu BGRA=%02x%02x%02x%02x\n",
++                    (unsigned long)crop.size.width, (unsigned long)crop.size.height, (unsigned long)stride,
++                    sample[0], sample[1], sample[2], sample[3]);
++        }
++        /* A child can extend beyond its accelerated parent. Completion only
++         * needs to cover the visible intersection; retrying the full request
++         * would never finish once the GPU stops presenting. */
++        CGRect required = CGRectIntersection(CGRectIntegral(requested_rect), bounds);
++        BOOL covered = CGRectIsNull(required) || CGRectIsEmpty(required) || CGRectContainsRect(crop, required);
++        if (covered && readback_ready && !readback_notification_pending)
++        {
++            ready = [readback_ready copy];
++            readback_notification_pending = YES;
++        }
++        /* A newer present or changed region may have arrived during this
++         * asynchronous copy. Catch up once, then stop when no work remains. */
++        retry = readback_ready && (!covered || serial != presented_serial);
++    }
++    readback_pending = NO;
++    pthread_mutex_unlock(&readback_lock);
++    if (ready)
++    {
++        __weak WineGDIReadbackLayer *weak_layer = self;
++        OnMainThreadAsync(^{
++            WineGDIReadbackLayer *layer = [weak_layer retain];
++            if (layer)
++            {
++                pthread_mutex_lock(&layer->readback_lock);
++                BOOL notify = !layer->readback_stopped;
++                layer->readback_notification_pending = NO;
++                pthread_mutex_unlock(&layer->readback_lock);
++                if (notify) ready();
++                [layer release];
++            }
++            [ready release];
++        });
++    }
++    if (retry) [self captureLastFrame];
++}
++
++- (NSData *)copyPixelsForRect:(CGRect *)rect since:(uint64_t *)serial stride:(NSUInteger *)stride
++{
++    NSMutableData *result = nil;
++    pthread_mutex_lock(&readback_lock);
++    *rect = CGRectIntersection(CGRectIntegral(*rect), readback_rect);
++    if (readback_pixels && *serial != readback_serial && !CGRectIsNull(*rect) && !CGRectIsEmpty(*rect))
++    {
++        NSUInteger width = rect->size.width, height = rect->size.height;
++        const unsigned char *source = readback_pixels.bytes;
++        *stride = width * 4;
++        result = [[NSMutableData alloc] initWithLength:*stride * height];
++        if (!result)
++        {
++            pthread_mutex_unlock(&readback_lock);
++            return nil;
++        }
++        unsigned char *destination = result.mutableBytes;
++        for (NSUInteger y = 0; y < height; y++)
++            memcpy(destination + y * *stride,
++                   source + ((NSUInteger)(rect->origin.y - readback_rect.origin.y) + y) * readback_stride +
++                   (NSUInteger)(rect->origin.x - readback_rect.origin.x) * 4,
++                   *stride);
++        *serial = readback_serial;
++    }
++    pthread_mutex_unlock(&readback_lock);
++    return result;
++}
++@end
+--- a/dlls/winemac.drv/macdrv.h
++++ b/dlls/winemac.drv/macdrv.h
+@@ -138,6 +138,8 @@
+ extern void macdrv_CleanupIcons(HWND hwnd);
+ extern LRESULT macdrv_DesktopWindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
+ extern void macdrv_DestroyWindow(HWND hwnd);
++extern void macdrv_AcquireWindowDC(HDC hdc, HWND hwnd, DWORD flags);
++extern void macdrv_gdi_readback_ready(HWND target, macdrv_view source);
+ extern void macdrv_SetDesktopWindow(HWND hwnd);
+ extern void macdrv_ActivateWindow(HWND hwnd, HWND previous);
+ extern void macdrv_SetLayeredWindowAttributes(HWND hwnd, COLORREF key, BYTE alpha,
+@@ -194,6 +196,8 @@
+     unsigned int        per_pixel_alpha : 1;    /* is window using per-pixel alpha? */
+     unsigned int        minimized : 1;          /* is window minimized? */
+     unsigned int        fullscreen : 1;         /* is the window visible rect fullscreen? (unrelated to native AppKit/Cocoa fullscreen) */
++    ULONGLONG gdi_readback_serial;
++    macdrv_view gdi_readback_view;
+ };
+ 
+ struct macdrv_client_surface
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -303,6 +303,7 @@
+     WINDOW_MINIMIZE_REQUESTED,
+     WINDOW_RESIZE_ENDED,
+     WINDOW_RESTORE_REQUESTED,
++    GDI_READBACK_READY,
+     NUM_EVENT_TYPES
+ };
+ 
+@@ -321,6 +322,10 @@
+     int                 type;
+     macdrv_window       window;
+     union {
++        struct {
++            void *target;
++            macdrv_view source;
++        }                                           gdi_readback_ready;
+         struct {
+             int reason;
+         }                                           app_quit_requested;
+@@ -536,6 +541,10 @@
+ extern macdrv_view macdrv_create_view(CGRect rect);
+ extern void macdrv_dispose_view(macdrv_view v);
+ extern void macdrv_set_view_frame(macdrv_view v, CGRect rect);
++extern void *macdrv_copy_view_readback(macdrv_view view, CGRect *rect, uint64_t *serial, unsigned int *stride);
++extern void macdrv_set_view_readback_region(macdrv_view view, CGRect rect, void *target);
++extern macdrv_view macdrv_retain_readback_view(macdrv_view view);
++extern void macdrv_release_readback_view(macdrv_view view);
+ extern void macdrv_set_view_superview(macdrv_view v, macdrv_view s, macdrv_window w, macdrv_view p, macdrv_view n);
+ extern void macdrv_set_view_hidden(macdrv_view v, bool hidden);
+ extern void macdrv_set_view_clip_rects(macdrv_view v, const CGRect *rects, int count);
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -39,6 +39,176 @@
+ #include "wine/list.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(macdrv);
++
++static void sync_gdi_client_clip(HWND hwnd, macdrv_view view);
++
++void macdrv_gdi_readback_ready(HWND target, macdrv_view source)
++{
++    struct macdrv_win_data *data;
++    HWND child;
++    BOOL current;
++    DWORD error = RtlGetLastWin32Error();
++    if (!(data = get_win_data(target))) goto done;
++    current = data->client_view == source;
++    release_win_data(data);
++    if (!current) goto done;
++    for (child = NtUserGetWindowRelative(target, GW_CHILD); child;
++         child = NtUserGetWindowRelative(child, GW_HWNDNEXT))
++    {
++        BOOL accelerated = FALSE;
++        if (!NtUserIsWindowVisible(child) ||
++            !(NtUserGetWindowLongW(child, GWL_EXSTYLE) & WS_EX_TRANSPARENT)) continue;
++        if ((data = get_win_data(child)))
++        {
++            accelerated = !!data->client_view;
++            release_win_data(data);
++        }
++        if (!accelerated) NtUserRedrawWindow(child, NULL, 0, RDW_INVALIDATE | RDW_NOERASE | RDW_NOCHILDREN);
++    }
++done:
++    RtlSetLastWin32Error(error);
++}
++
++/* Seed a transparent child DC with the last completed GPU
++ * frame before GDI paints into the shared window surface. The native-side
++ * copy is asynchronous and this path never waits for GPU completion. */
++void macdrv_AcquireWindowDC(HDC hdc, HWND hwnd, DWORD flags)
++{
++    static __thread BOOL syncing;
++    struct macdrv_win_data *data;
++    macdrv_view view = NULL;
++    HWND parent;
++    RECT rect;
++    CGRect crop, original;
++    uint64_t serial = 0;
++    unsigned int stride = 0;
++    DWORD error;
++    void *pixels;
++    UINT dpi, width, height;
++    BITMAPINFO info = {.bmiHeader = {.biSize = sizeof(BITMAPINFOHEADER), .biPlanes = 1,
++                                    .biBitCount = 32, .biCompression = BI_RGB}};
++    const char *option = getenv("WINE_MAC_GDI_READBACK");
++
++    if (syncing || !option || !atoi(option) || !hwnd || (flags & DCX_WINDOW)) return;
++    error = RtlGetLastWin32Error();
++    if (!(NtUserGetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TRANSPARENT)) goto done;
++    if ((data = get_win_data(hwnd)))
++    {
++        BOOL accelerated = !!data->client_view;
++        release_win_data(data);
++        if (accelerated) goto done;
++    }
++    for (parent = NtUserGetAncestor(hwnd, GA_PARENT); parent && parent != NtUserGetDesktopWindow();
++         parent = NtUserGetAncestor(parent, GA_PARENT))
++    {
++        if (!(data = get_win_data(parent))) continue;
++        if (data->client_view) view = macdrv_retain_readback_view(data->client_view);
++        release_win_data(data);
++        if (view) break;
++    }
++    if (!view || !(data = get_win_data(hwnd))) goto done;
++    if (data->gdi_readback_view == view) serial = data->gdi_readback_serial;
++    release_win_data(data);
++    /* Ordinary GetDC reads and incremental drawing must preserve existing GDI
++     * content. Only a paint DC may refresh an already initialized background. */
++    if (serial && !(flags & DCX_INTERSECTRGN)) goto done;
++    dpi = NtUserGetWinMonitorDpi(parent, MDT_RAW_DPI);
++    if (!NtUserGetClientRect(hwnd, &rect, dpi)) goto done;
++    NtUserMapWindowPoints(hwnd, parent, (POINT *)&rect, 2, dpi);
++    original = crop = cgrect_from_rect(rect);
++    syncing = TRUE;
++    sync_gdi_client_clip(parent, view);
++    /* A shared GDI backing can be overwritten while this view is hidden.
++     * BeginPaint must restore its background even when no new GPU frame was
++     * presented. Ordinary GetDC still preserves incremental GDI drawing. */
++    if (flags & DCX_INTERSECTRGN) serial = 0;
++    pixels = macdrv_copy_view_readback(view, &crop, &serial, &stride);
++    if (pixels)
++    {
++        width = stride / 4;
++        height = crop.size.height;
++        info.bmiHeader.biWidth = width;
++        info.bmiHeader.biHeight = -(INT)height;
++        info.bmiHeader.biSizeImage = stride * height;
++        NtGdiSetDIBitsToDeviceInternal(hdc, crop.origin.x - original.origin.x, crop.origin.y - original.origin.y,
++                                      width, height, 0, 0, 0, height, pixels, &info, DIB_RGB_COLORS,
++                                      stride * height, sizeof(info), FALSE, 0);
++        free(pixels);
++        if ((data = get_win_data(hwnd)))
++        {
++            data->gdi_readback_view = view;
++            data->gdi_readback_serial = serial;
++            release_win_data(data);
++        }
++        NtGdiFlush();
++        sync_gdi_client_clip(parent, view);
++    }
++    syncing = FALSE;
++done:
++    if (view) macdrv_release_readback_view(view);
++    RtlSetLastWin32Error(error);
++}
++
++static void sync_gdi_client_clip(HWND hwnd, macdrv_view view)
++{
++    const char *option = getenv("WINE_MAC_GDI_READBACK");
++    DWORD error = RtlGetLastWin32Error(), size;
++    HDC dc = 0;
++    HRGN region = 0, child_region = 0;
++    HWND child;
++    RGNDATA *regions = NULL;
++    CGRect *rects = NULL;
++    UINT dpi;
++    RECT rect;
++    CGRect interest = CGRectNull;
++    struct macdrv_win_data *data;
++
++    if (!option || !atoi(option) || !view || !hwnd) return;
++    dc = NtUserGetDCEx(hwnd, 0, DCX_CACHE | DCX_CLIPSIBLINGS | DCX_CLIPCHILDREN);
++    if (!dc || !(region = NtGdiCreateRectRgn(0, 0, 0, 0))) goto done;
++    if (NtGdiGetRandomRgn(dc, region, SYSRGN | NTGDI_RGN_MONITOR_DPI) <= 0) goto done;
++    dpi = NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI);
++    for (child = NtUserGetWindowRelative(hwnd, GW_CHILD); child;
++         child = NtUserGetWindowRelative(child, GW_HWNDNEXT))
++    {
++        BOOL seeded = FALSE, accelerated = FALSE;
++        if (!NtUserIsWindowVisible(child) ||
++            !(NtUserGetWindowLongW(child, GWL_EXSTYLE) & WS_EX_TRANSPARENT)) continue;
++        if ((data = get_win_data(child)))
++        {
++            seeded = data->gdi_readback_view == view && data->gdi_readback_serial;
++            accelerated = !!data->client_view;
++            release_win_data(data);
++        }
++        if (accelerated || !NtUserGetClientRect(child, &rect, dpi)) continue;
++        NtUserMapWindowPoints(child, hwnd, (POINT *)&rect, 2, dpi);
++        interest = CGRectUnion(interest, cgrect_from_rect(rect));
++        if (!seeded) continue;
++        if (!child_region) child_region = NtGdiCreateRectRgn(0, 0, 0, 0);
++        if (!child_region) goto done;
++        NtGdiSetRectRgn(child_region, rect.left, rect.top, rect.right, rect.bottom);
++        NtGdiCombineRgn(region, region, child_region, RGN_DIFF);
++    }
++    macdrv_set_view_readback_region(view, interest, hwnd);
++    if (!(size = NtGdiGetRegionData(region, 0, NULL)) || !(regions = malloc(size)) ||
++        !NtGdiGetRegionData(region, size, regions)) goto done;
++    if (regions->rdh.nCount)
++    {
++        RECT *source = (RECT *)regions->Buffer;
++        if (!(rects = malloc(regions->rdh.nCount * sizeof(*rects)))) goto done;
++        for (DWORD i = 0; i < regions->rdh.nCount; i++) rects[i] = cgrect_from_rect(source[i]);
++        macdrv_set_view_clip_rects(view, rects, regions->rdh.nCount);
++        macdrv_set_view_hidden(view, FALSE);
++    }
++    else macdrv_set_view_hidden(view, TRUE);
++done:
++    free(rects);
++    free(regions);
++    if (child_region) NtGdiDeleteObjectApp(child_region);
++    if (region) NtGdiDeleteObjectApp(region);
++    if (dc) NtUserReleaseDC(hwnd, dc);
++    RtlSetLastWin32Error(error);
++}
+ 
+ 
+ static pthread_mutex_t win_data_mutex;
+@@ -1155,7 +1325,6 @@
+     HDC hdc;
+ 
+     *ret_rects = NULL;
+-    if (!NtUserIsWindowVisible(hwnd)) return 0;
+     OffsetRect(&full, -full.left, -full.top);
+ 
+     /* The Cocoa view is above every sibling, so always clip siblings that are above the window
+@@ -1242,7 +1411,7 @@
+     HWND hwnd = surface->client.hwnd;
+     struct macdrv_win_data *data;
+     RECT *rects;
+-    int count, hidden;
++    int count, hidden = 1;
+ 
+     count = client_surface_get_clip(surface, &rects);
+ 
+@@ -1256,6 +1425,7 @@
+         release_win_data(data);
+     }
+     free(rects);
++    if (!hidden) sync_gdi_client_clip(hwnd, surface->cocoa_view);
+ }
+ 
+ static void macdrv_client_surface_update(struct client_surface *client)
+@@ -1306,17 +1476,34 @@
+     .present = macdrv_client_surface_present,
+ };
+ 
++/* DXMT activates surfaces when CAMetalLayer requests a drawable. A
++ * client_surface_present() call from window layout only updates geometry. */
++static void dxmt_layout_present(struct client_surface *client, HDC hdc)
++{
++    (void)client;
++    (void)hdc;
++}
++
++static const struct client_surface_funcs dxmt_client_surface_funcs =
++{
++    .destroy = macdrv_client_surface_destroy,
++    .detach = macdrv_client_surface_detach,
++    .update = macdrv_client_surface_update,
++    .present = dxmt_layout_present,
++};
++
+ struct macdrv_client_surface *impl_from_client_surface(struct client_surface *client)
+ {
+-    assert(client->funcs == &macdrv_client_surface_funcs);
++    assert(client->funcs == &macdrv_client_surface_funcs || client->funcs == &dxmt_client_surface_funcs);
+     return CONTAINING_RECORD(client, struct macdrv_client_surface, client);
+ }
+ 
+-struct client_surface *macdrv_CreateClientSurface(HWND hwnd, int pixel_format)
++static struct client_surface *create_client_surface(HWND hwnd, int pixel_format,
++                                                     const struct client_surface_funcs *funcs)
+ {
+     struct macdrv_client_surface *surface;
+ 
+-    if (!(surface = client_surface_create(sizeof(*surface), &macdrv_client_surface_funcs, hwnd, pixel_format)))
++    if (!(surface = client_surface_create(sizeof(*surface), funcs, hwnd, pixel_format)))
+         return NULL;
+     surface->cocoa_view = macdrv_create_view(cgrect_from_rect(surface->client.monitor_rect));
+     if (!surface->cocoa_view)
+@@ -1324,17 +1511,22 @@
+         client_surface_release(&surface->client);
+         return NULL;
+     }
+-
+     macdrv_set_view_hidden(surface->cocoa_view, TRUE);
+     surface->hidden = 1;
+     surface->clip_count = -1;
++    surface->clip_rects = NULL;
+     macdrv_client_surface_update(&surface->client);
+     macdrv_client_surface_present(&surface->client, 0);
+ 
+     return &surface->client;
+ }
+ 
+-/* DXMT expects the pre-11.16 Mac driver's window-data layout. Expose a
++struct client_surface *macdrv_CreateClientSurface(HWND hwnd, int pixel_format)
++{
++    return create_client_surface(hwnd, pixel_format, &macdrv_client_surface_funcs);
++}
++
++/* DXMT 0.80 expects the pre-11.16 Mac driver's window-data layout. Expose a
+  * compatibility handle with the old prefix and own a modern client surface
+  * for the lifetime of each DXMT view. The handle is opaque to winemetal. */
+ struct dxmt_view_handle
+@@ -1352,10 +1544,12 @@
+ static pthread_mutex_t dxmt_views_lock = PTHREAD_MUTEX_INITIALIZER;
+ static struct list dxmt_views = LIST_INIT(dxmt_views);
+ 
+-/* Legacy DXMT surfaces are created outside win32u's client-surface set.
+- * Refresh their child clips after Windows changes visibility or stacking. */
+-static void dxmt_update_child_clips(HWND hwnd)
+-{
++/* Legacy DXMT surfaces are outside win32u's client-surface set. Refresh
++ * their frames when their window or a parent changes position or size. */
++static void dxmt_update_child_surfaces(HWND hwnd, UINT swp_flags)
++{
++    BOOL geometry_changed = (swp_flags & SWP_FRAMECHANGED) ||
++        (swp_flags & (SWP_NOMOVE | SWP_NOSIZE)) != (SWP_NOMOVE | SWP_NOSIZE);
+     struct dxmt_view_handle *view;
+     HWND root;
+ 
+@@ -1365,11 +1559,15 @@
+         LIST_FOR_EACH_ENTRY(view, &dxmt_views, struct dxmt_view_handle, entry)
+         {
+             if (view->hwnd == root || NtUserGetAncestor(view->hwnd, GA_ROOT) != root) continue;
+-            client_surface_sync_child(impl_from_client_surface(view->surface));
++            if (geometry_changed && (hwnd == view->hwnd || NtUserIsChild(hwnd, view->hwnd)))
++                client_surface_present(view->surface);
++            else
++                client_surface_sync_child(impl_from_client_surface(view->surface));
+         }
+     }
+     pthread_mutex_unlock(&dxmt_views_lock);
+ }
++
+ 
+ static struct dxmt_view_handle *dxmt_get_win_data(HWND hwnd)
+ {
+@@ -1398,11 +1596,13 @@
+     struct macdrv_client_surface *surface = impl_from_client_surface(client);
+     struct macdrv_win_data *data = get_win_data(client->hwnd);
+     BOOL current;
++    const char *readback = getenv("WINE_MAC_GDI_READBACK");
+ 
+     if (!data) return;
+     current = data->client_view == surface->cocoa_view;
+     release_win_data(data);
+     if (!current) macdrv_client_surface_present(client, 0);
++    else if (readback && atoi(readback)) client_surface_sync_child(surface);
+ }
+ 
+ static macdrv_metal_view dxmt_create_metal_view(macdrv_view token, macdrv_metal_device device)
+@@ -1411,7 +1611,7 @@
+     struct macdrv_client_surface *surface;
+ 
+     if (!view || !view->hwnd || !NtUserIsWindow(view->hwnd)) return NULL;
+-    if (!(view->surface = macdrv_CreateClientSurface(view->hwnd, 0))) return NULL;
++    if (!(view->surface = create_client_surface(view->hwnd, 0, &dxmt_client_surface_funcs))) return NULL;
+     surface = impl_from_client_surface(view->surface);
+     view->metal_view = macdrv_view_create_metal_view(surface->cocoa_view, device);
+     if (!view->metal_view) return NULL;
+@@ -1738,9 +1938,15 @@
+     TRACE("hwnd %p offset %d styleOld 0x%08x styleNew 0x%08x\n", hwnd, offset, style->styleOld, style->styleNew);
+ 
+     if (hwnd == NtUserGetDesktopWindow()) return;
+-    /* ShowWindow only toggles WS_VISIBLE when an ancestor is already hidden. */
+-    if (offset == GWL_STYLE && (style->styleOld & WS_VISIBLE) && !(style->styleNew & WS_VISIBLE))
+-        deactivate_altium_view_before_hide(hwnd, SWP_HIDEWINDOW);
++    /* A visibility change can reach the driver as a style update without a
++     * window-position notification. Recompute the legacy DXMT child clips
++     * even when the changed window does not own a native view. */
++    if (offset == GWL_STYLE && ((style->styleOld ^ style->styleNew) & WS_VISIBLE))
++    {
++        if (!(style->styleNew & WS_VISIBLE))
++            deactivate_altium_view_before_hide(hwnd, SWP_HIDEWINDOW);
++        dxmt_update_child_surfaces(hwnd, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
++    }
+     if (!(data = get_win_data(hwnd))) return;
+ 
+     if (data->cocoa_window)
+@@ -1996,10 +2202,10 @@
+     unsigned int new_style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
+     struct window_rects old_rects;
+ 
+-    if ((swp_flags & (SWP_SHOWWINDOW | SWP_HIDEWINDOW)) ||
++    if ((swp_flags & (SWP_SHOWWINDOW | SWP_HIDEWINDOW | SWP_FRAMECHANGED)) ||
+         (swp_flags & (SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER)) !=
+             (SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER))
+-        dxmt_update_child_clips(hwnd);
++        dxmt_update_child_surfaces(hwnd, swp_flags);
+ 
+     if (!(data = get_win_data(hwnd))) return;
+ 
+--- a/include/wine/gdi_driver.h
++++ b/include/wine/gdi_driver.h
+@@ -218,7 +218,7 @@
+ };
+ 
+ /* increment this when you change the DC function table */
+-#define WINE_GDI_DRIVER_VERSION 110
++#define WINE_GDI_DRIVER_VERSION 111
+ 
+ #define GDI_PRIORITY_NULL_DRV        0  /* null driver */
+ #define GDI_PRIORITY_FONT_DRV      100  /* any font driver */
+@@ -438,6 +438,7 @@
+     UINT    (*pOpenGLInit)(UINT,const struct opengl_funcs *,const struct opengl_driver_funcs **);
+     /* thread management */
+     void    (*pThreadDetach)(void);
++    void    (*pAcquireWindowDC)(HDC,HWND,DWORD);
+ };
+ 
+ W32KAPI void __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT version );

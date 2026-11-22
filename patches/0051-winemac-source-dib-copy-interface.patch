@@ -1,0 +1,188 @@
+Subject: winemac: preserve source-built Win32u bitmap copy optimizations
+
+--- a/dlls/win32u/dibdrv/primitives.c
++++ b/dlls/win32u/dibdrv/primitives.c
+@@ -26,6 +26,7 @@
+ 
+ #include "ntgdi_private.h"
+ #include "dibdrv.h"
++#include "wine/gdi_copy.h"
+ 
+ #include "wine/debug.h"
+ 
+@@ -8242,3 +8243,26 @@
+     shrink_row_null,
+     halftone_null
+ };
++
++/* The matching Mac driver can discover the actual source-built tables without
++ * depending on a particular link address, compiler prologue or Mach-O UUID.
++ * Version/size and every consumed prefix offset are checked by the caller. */
++__attribute__((visibility("default")))
++int __wine_get_dib_copy_tables(unsigned int version, unsigned int size, struct wine_dib_copy_tables *tables)
++{
++    if (version != WINE_DIB_COPY_TABLES_VERSION || size != sizeof(*tables) || !tables) return 0;
++    *tables = (struct wine_dib_copy_tables){
++        .prefix_size = offsetof(dib_info, bits) + sizeof(void *),
++        .rect_offset = offsetof(dib_info, rect),
++        .stride_offset = offsetof(dib_info, stride),
++        .bits_offset = offsetof(dib_info, bits),
++        .bit_count_offset = offsetof(dib_info, bit_count),
++        .width_offset = offsetof(dib_info, width),
++        .height_offset = offsetof(dib_info, height),
++        .compression_offset = offsetof(dib_info, compression),
++        .copy_rect = copy_rect_32,
++        .table1 = (void *)&funcs_8888.copy_rect,
++        .table2 = (void *)&funcs_32.copy_rect,
++    };
++    return 1;
++}
+--- a/dlls/winemac.drv/cocoa_gdicopy.m
++++ b/dlls/winemac.drv/cocoa_gdicopy.m
+@@ -18,6 +18,7 @@
+ #include "config.h"
+ #include <dlfcn.h>
+ #include "macdrv_cocoa.h"
++#include "wine/gdi_copy.h"
+ #include <dispatch/dispatch.h>
+ #include <mach-o/dyld.h>
+ #include <mach-o/loader.h>
+@@ -33,9 +34,9 @@
+ static char native_worker_path[PATH_MAX];
+ #include "native_gdi_client.h"
+ 
+-/* These private interfaces are accepted only for the verified Gcenx 11.16
+- * win32u UUID below. Replacing that module disables the optimization. This
+- * preserves the stock module's FreeType, Vulkan and Staging implementation. */
++/* The source-built Win32u reports every consumed bitmap-prefix offset.
++ * Stock Gcenx 11.16 retains the exact UUID/prologue/table fallback below.
++ * Unknown interfaces keep Wine's ordinary copy path. */
+ struct altium_rect { int32_t left, top, right, bottom; };
+ struct altium_point { int32_t x, y; };
+ struct altium_dib
+@@ -165,6 +166,40 @@
+             CGPointMake((int16_t)position, (int16_t)(position >> 16)));
+ }
+ 
++static int altium_install_copy_hook(altium_copy_func code, altium_copy_func *table1, altium_copy_func *table2)
++{
++    uintptr_t page_address;
++    size_t page;
++    if (!code || !table1 || !table2 || *table1 != code || *table2 != code) return 0;
++    page = getpagesize(); page_address = (uintptr_t)table1 & ~(uintptr_t)(page - 1);
++    if (((uintptr_t)table2 & ~(uintptr_t)(page - 1)) != page_address) return 0;
++    if (mach_vm_protect(mach_task_self(), page_address, page, 0,
++                         VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) return 0;
++
++    original_copy = code;
++    copy_table1 = table1; copy_table2 = table2;
++    *table1 = altium_parallel_copy; *table2 = altium_parallel_copy;
++    mach_vm_protect(mach_task_self(), page_address, page, 0, VM_PROT_READ);
++    return 1;
++}
++
++static int altium_hook_source_copy(void)
++{
++    struct wine_dib_copy_tables info;
++    int (*query)(unsigned int, unsigned int, struct wine_dib_copy_tables *);
++    query = dlsym(RTLD_DEFAULT, "__wine_get_dib_copy_tables");
++    if (!query || !query(WINE_DIB_COPY_TABLES_VERSION, sizeof(info), &info)) return 0;
++    if (info.prefix_size != sizeof(struct altium_dib) ||
++        info.bit_count_offset != offsetof(struct altium_dib, bit_count) ||
++        info.width_offset != offsetof(struct altium_dib, width) ||
++        info.height_offset != offsetof(struct altium_dib, height) ||
++        info.compression_offset != offsetof(struct altium_dib, compression) ||
++        info.rect_offset != offsetof(struct altium_dib, rect) ||
++        info.stride_offset != offsetof(struct altium_dib, stride) ||
++        info.bits_offset != offsetof(struct altium_dib, bits)) return 0;
++    return altium_install_copy_hook((altium_copy_func)info.copy_rect, info.table1, info.table2);
++}
++
+ static int altium_hook_image(const struct mach_header *header, intptr_t slide)
+ {
+     const uint8_t expected_uuid[16] = {0x4e,0xe2,0xce,0x2b,0x55,0xa5,0x39,0x87,
+@@ -173,8 +208,7 @@
+                                 0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xec,0x48};
+     const struct load_command *lc;
+     uint32_t i;
+-    uintptr_t code, page_address;
+-    size_t page;
++    uintptr_t code;
+     int matches = 0;
+     altium_copy_func *table1, *table2;
+ 
+@@ -193,16 +227,7 @@
+     table1 = (void *)(slide + 0x1cc778); table2 = (void *)(slide + 0x1cc808);
+     if (memcmp((void *)code, prologue, sizeof(prologue)) ||
+         (uintptr_t)*table1 != code || (uintptr_t)*table2 != code) return 0;
+-    page = getpagesize(); page_address = (uintptr_t)table1 & ~(uintptr_t)(page - 1);
+-    if (((uintptr_t)table2 & ~(uintptr_t)(page - 1)) != page_address) return 0;
+-    if (mach_vm_protect(mach_task_self(), page_address, page, 0,
+-                         VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) return 0;
+-
+-    original_copy = (altium_copy_func)code;
+-    copy_table1 = table1; copy_table2 = table2;
+-    *table1 = altium_parallel_copy; *table2 = altium_parallel_copy;
+-    mach_vm_protect(mach_task_self(), page_address, page, 0, VM_PROT_READ);
+-    return 1;
++    return altium_install_copy_hook((altium_copy_func)code, table1, table2);
+ }
+ 
+ __attribute__((constructor)) static void altium_gdi_start(void)
+@@ -210,6 +235,7 @@
+     const char *enabled = getenv("ALTIUM_PARALLEL_GDI"), *workers;
+     const char *pan = getenv("ALTIUM_SMOOTH_SCHEMATIC_PAN");
+     uint32_t i;
++    int hooked;
+     parallel_enabled = enabled && !strcmp(enabled, "1");
+     pan_enabled = pan && !strcmp(pan, "1");
+     enabled=getenv("ALTIUM_NATIVE_GDI");native_enabled=enabled&&!strcmp(enabled,"1");
+@@ -228,13 +254,15 @@
+     if (workers && atoi(workers) >= 1 && atoi(workers) <= 8) copy_workers = atoi(workers);
+     /* win32u is already loaded as this driver's native dependency. Avoid a
+      * permanent dyld callback into a driver that might later be unloaded. */
+-    for (i = 0; i < _dyld_image_count(); i++)
+-        if (altium_hook_image(_dyld_get_image_header(i), _dyld_get_image_vmaddr_slide(i)))
+-        {
+-            fprintf(stderr, "ALTIUM_GDI: parallel=%d (%d workers), schematic preview=%d, native viewport=%d\n",
+-                    parallel_enabled, copy_workers, pan_enabled && !!message_pos,native_enabled);
+-            return;
+-        }
++    hooked = altium_hook_source_copy();
++    for (i = 0; !hooked && i < _dyld_image_count(); i++)
++        hooked = altium_hook_image(_dyld_get_image_header(i), _dyld_get_image_vmaddr_slide(i));
++    if (hooked)
++    {
++        fprintf(stderr, "ALTIUM_GDI: parallel=%d (%d workers), schematic preview=%d, native viewport=%d\n",
++                parallel_enabled, copy_workers, pan_enabled && !!message_pos,native_enabled);
++        return;
++    }
+     fprintf(stderr, "ALTIUM_GDI: unrecognized win32u; using ordinary copies\n");
+ }
+ 
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -1122,6 +1122,7 @@
+ 	wine/epm.idl \
+ 	wine/exception.h \
+ 	wine/fil_data.idl \
++	wine/gdi_copy.h \
+ 	wine/gdi_driver.h \
+ 	wine/glu.h \
+ 	wine/hid.h \
+--- /dev/null
++++ b/include/wine/gdi_copy.h
+@@ -0,0 +1,13 @@
++/* Source-built DIB copy interface. LGPL-2.1-or-later. */
++#ifndef __WINE_GDI_COPY_H
++#define __WINE_GDI_COPY_H
++struct wine_dib_copy_tables
++{
++    unsigned int prefix_size, rect_offset, stride_offset, bits_offset;
++    unsigned int bit_count_offset, width_offset, height_offset, compression_offset;
++    void *copy_rect;
++    void *table1;
++    void *table2;
++};
++#define WINE_DIB_COPY_TABLES_VERSION 1
++#endif

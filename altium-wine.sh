@@ -698,6 +698,8 @@ select_ad26_dxmt() {
     use_wine_app "$app"
     EXTRA_DLLOVERRIDES="${EXTRA_DLLOVERRIDES:+$EXTRA_DLLOVERRIDES;}d3d11,d3d10core,dxgi,winemetal=b"
     export DXMT_SHADER_CACHE=0
+    # Preserve transparent GDI controls drawn over the accelerated PCB view.
+    export WINE_MAC_GDI_READBACK="${WINE_MAC_GDI_READBACK:-1}"
     say "Using DXMT for Altium Designer 26"
 }
 

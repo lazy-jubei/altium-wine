@@ -146,11 +146,16 @@ AD17 uses CefSharp instead of WebView2. Its Chromium GPU helper can spin at roug
 
 ### Differential routing stays paused after Tab
 
-Switching directly from single-track to differential routing under Wine can
-deliver a second end notification from the single-track router after the pair
-has started. The Properties panel then loses the controls and keyboard handler
-for the active route. In testing, pressing Esc to exit single-track routing
-before starting the pair avoided the duplicate notification.
+Switching directly from single-track to differential routing can leave the
+Properties panel attached to the previous routing mode. This transition was
+also observed in native Windows during the comparison; it is not sufficient
+evidence of a Wine-only router lifecycle defect. The separate reported invalid
+window handle / binder destruction failure remains under investigation.
+
+Wine also failed to display Altium’s existing transparent pause/resume control
+over the accelerated PCB. Patch `0050` addresses that composition defect and
+background pixels from a previously displayed document. It does not change
+Altium’s PCB provider or routing commands.
 
 The optional routing guard ignores that specific late notification. Quit Altium
 and run this command from the installed kit.
@@ -603,3 +608,40 @@ AD26_DXVK_DIR="$HOME/AltiumWine/build/ad26-dxvk/output"
 
 The launcher refuses to replace an open renderer and converts local document
 paths to Windows paths before passing them to Altium.
+
+### Transparent controls over Metal PCB views
+
+Patch `0050` composes transparent GDI children over the most recently completed
+Metal frame. It requests only the visible child region, keeps one asynchronous
+GPU copy in flight, coalesces completion notifications, and reseeds the background
+on BeginPaint. A completed final frame can refresh a control even after rendering
+stops. Destruction cancels further notifications and releases retained frames.
+The UI thread does not wait for GPU completion.
+
+`run` enables this with `WINE_MAC_GDI_READBACK=1` for Altium 26 with DXMT. Set it
+to `0` in `config.local.sh` to compare the original composition behavior. The
+matching rebuilt `winemac.so` and `win32u.so` must be installed together. Other
+renderers and Linux retain their existing defaults.
+
+The prototype was checked with final-frame, clipped-child, backing-store reuse,
+late paint, post-present, and destruction fixtures, including delayed GPU-copy
+completion. It adds CPU copying only while a transparent child needs a GPU
+background. In one 600-frame 2038×1215 fixture, enabled CPU time was 2310 ms
+versus 1040 ms disabled, with approximately 9577 ms wall time in both runs.
+This measurement is not an Altium performance benchmark.
+
+The macOS failure-path check compiles the patched header with simulated Metal
+factory and allocation failures, without submitting GPU work:
+
+```bash
+python3 diagnostics/check-metal-gdi-failure-paths.py ~/AltiumWine/build/src-wine-11.16
+```
+
+The Linux setup closes its lock descriptor before starting Wine. Otherwise the
+background wineserver can inherit that lock and block a later setup. To check
+repeat setup using a temporary prefix and an already installed runner:
+
+```bash
+python3 diagnostics/linux-setup-repeat-check.py \
+  ~/AltiumWineLinux/runners/wine-11.22-staging-amd64-wow64
+```
