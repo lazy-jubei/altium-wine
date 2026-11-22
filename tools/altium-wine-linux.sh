@@ -204,6 +204,7 @@ setup() (
     mkdir -p -- "$LOGS"
     exec 8>"$ROOT/.setup.lock"
     flock 8
+    # wineserver can outlive setup. It must not inherit and retain this lock.
     patch_user32
     apply_built_modules
     [[ -f "$PREFIX/.altium-linux-setup" && -f "$PREFIX/system.reg" ]] && return
@@ -212,11 +213,11 @@ setup() (
     printf 'Preparing %s (log %s)\n' "$PREFIX" "$log"
     if [[ ! -f "$PREFIX/drive_c/windows/system32/kernel32.dll" ]]; then
         WINEDLLOVERRIDES="mscoree,mshtml=d${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}" \
-            "$WINE" wineboot --init >>"$log" 2>&1 || die "wineboot failed. See $log"
+            "$WINE" wineboot --init 8>&- >>"$log" 2>&1 || die "wineboot failed. See $log"
     fi
     {
-        "$WINE" winecfg -v win10 &&
-        "$WINE" reg add 'HKCU\Software\Microsoft\Avalon.Graphics' /v DisableHWAcceleration /t REG_DWORD /d 1 /f
+        "$WINE" winecfg -v win10 8>&- &&
+        "$WINE" reg add 'HKCU\Software\Microsoft\Avalon.Graphics' /v DisableHWAcceleration /t REG_DWORD /d 1 /f 8>&-
     } >>"$log" 2>&1 || die "Wine configuration failed. See $log"
     touch "$PREFIX/.altium-linux-setup"
 )
