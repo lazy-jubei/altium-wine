@@ -17,16 +17,16 @@ build.
 
 ## Install on Linux
 
-Clone the repository and run the installer with your Altium offline setup ZIP
+Download the release installer and run it with your Altium offline setup ZIP
 or folder. See the Linux guide for build prerequisites, Altium 365 sign-in,
 and renderer settings. [Linux setup guide](docs/linux.md)
 
 ```bash
-git clone https://github.com/lazy-jubei/altium-wine.git
-cd altium-wine
+curl -fsSL https://github.com/lazy-jubei/altium-wine/releases/latest/download/install.sh -o install.sh
 bash install.sh --build-from-source --altium-installer /path/to/offline-setup.zip
-bash altium-wine.sh run
 ```
+
+Open **Altium Designer (Wine)** from your application menu.
 
 ## Install on macOS
 

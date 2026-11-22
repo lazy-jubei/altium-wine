@@ -5,12 +5,17 @@ was tested on Ubuntu 24.04 (X11) with Altium Designer 26.12.2.
 
 ## Install
 
-Run from this checkout with your Altium offline installer ZIP, extracted
+Download the release installer and pass your Altium offline ZIP, extracted
 folder, or setup executable.
 
 ```sh
+curl -fsSL https://github.com/lazy-jubei/altium-wine/releases/latest/download/install.sh -o install.sh
 bash install.sh --altium-installer "$HOME/Downloads/OfflineSetup_Altium_Designer_Public_26_12_2.zip"
 ```
+
+The release installer verifies the kit archive and stores it under
+`~/AltiumWineLinux/kits/<version>`. Run the terminal commands below from
+that kit directory or a repository checkout.
 
 Setup downloads and verifies a pinned x86-64 Wine Staging WoW64 build from
 [Kron4ek's Wine builds](https://github.com/Kron4ek/Wine-Builds).

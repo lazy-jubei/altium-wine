@@ -34,6 +34,10 @@ MODULES_SHA256=""
 
 main() {
     if [ "$(uname -s)" = Linux ]; then
+        if [ -n "$RELEASE_URL" ]; then
+            install_linux_release "$@"
+            return
+        fi
         local linux_kit
         linux_kit="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
         [ -f "$linux_kit/tools/altium-wine-linux.sh" ] ||
@@ -547,5 +551,63 @@ patched_matches() {  # patched_matches PATCHES SHA256SUMS - every module hash ap
     done
     return 0
 }
+
+install_linux_release() {
+    local root="${ALTIUM_WINE_ROOT:-$HOME/AltiumWineLinux}" kit
+    local args=("$@")
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --root) root="${2:?--root needs a directory}"; shift ;;
+            --altium-installer) : "${2:?--altium-installer needs a path}"; shift ;;
+            --skip-altium|--reinstall-altium|--no-launcher|--build-from-source|--yes|--terminal) ;;
+            -h|--help)
+                cat <<'HELP'
+Altium Designer on Linux (x86-64)
+
+  bash install.sh --altium-installer PATH [--build-from-source]
+  bash install.sh --skip-altium
+
+PATH can be the Altium offline ZIP, an extracted folder, or the setup executable.
+Use --root DIR to change the install location and --no-launcher to skip the
+application menu entry. The default location is ~/AltiumWineLinux.
+HELP
+                return ;;
+            *) die "Unknown option: $1 (try --help)" ;;
+        esac
+        shift
+    done
+    [ "$(uname -m)" = x86_64 ] || die "This kit requires x86-64 Linux."
+    root="$(realpath -m -- "$root")" || die "Could not resolve the Linux install location."
+    kit="$root/kits/$KIT_VERSION"
+    prepare_linux_kit "$kit" || exit 1
+    exec bash "$kit/tools/altium-wine-linux.sh" kit-install "${args[@]}"
+}
+
+prepare_linux_kit() (
+    local kit="$1" directory="${1%/*}" stage archive digest
+    [ -n "$KIT_SHA256" ] || die "No kit checksum in this install.sh."
+    mkdir -p -- "$directory" || die "Could not create $directory."
+    exec 9>"$directory/.install.lock" || die "Could not open the kit lock."
+    flock 9 || die "Could not lock the kit directory."
+    if [ -e "$kit" ] || [ -L "$kit" ]; then
+        [ ! -L "$kit" ] && [ -s "$kit/tools/altium-wine-linux.sh" ] &&
+            [ "$(cat "$kit/.release-sha256" 2>/dev/null)" = "$KIT_SHA256" ] &&
+            return 0
+        die "The existing kit at $kit does not match this release."
+    fi
+
+    stage="$(mktemp -d -- "$directory/.unpack.XXXXXX")" || die "Could not stage the Linux kit."
+    trap 'rm -rf -- "$stage"' EXIT
+    archive="$stage/altium-wine-kit-$KIT_VERSION.tar.gz"
+    say "Downloading ${archive##*/}"
+    curl --proto '=https' -fLsS --retry 2 -o "$archive" "$RELEASE_URL/${archive##*/}" ||
+        die "Could not download ${archive##*/}."
+    digest="$(sha256sum < "$archive")" || die "Could not check ${archive##*/}."
+    [ "$digest" = "$KIT_SHA256  -" ] || die "Checksum mismatch for ${archive##*/}."
+    tar -xzf "$archive" -C "$stage" || die "Kit extract failed."
+    [ -s "$stage/kit/tools/altium-wine-linux.sh" ] || die "The release kit has no Linux installer."
+    printf '%s\n' "$KIT_SHA256" >"$stage/kit/.release-sha256" || die "Could not record the kit checksum."
+    mv -T -- "$stage/kit" "$kit" || die "Could not install the kit at $kit."
+)
 
 main "$@"
