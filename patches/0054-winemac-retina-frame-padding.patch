@@ -1,0 +1,60 @@
+Subject: winemac.drv: mask the excess of rounded Retina popup frames
+
+AppKit rounds half-point frames. Preserve the Win32 frame and mask native padding.
+
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -428,4 +428,5 @@
+ 
+ @property (nonatomic) BOOL shapeChangedSinceLastDraw;
++@property (nonatomic) BOOL retinaFrameShape;
+ @property (readonly, nonatomic) BOOL needsTransparency;
+ 
+@@ -1984,4 +1985,6 @@
+         wineFrame = frame;
+         roundedWineFrame = self.frame;
++        if (self.retinaFrameShape || !self.contentView.layer.mask)
++            [self setShape:NULL];
+         CGFloat junk;
+ #if CGFLOAT_IS_DOUBLE
+@@ -2139,5 +2142,23 @@
+         CALayer* layer = [[self contentView] layer];
+         CAShapeLayer* mask = (CAShapeLayer*)layer.mask;
+-        if (CGPathEqualToPath(newShape, mask.path)) return;
++        CGPathRef frameShape = NULL;
++
++        /* AppKit can round a half-point borderless frame up. The unused part
++         * of the opaque native window would otherwise show its background. */
++        if (!newShape && retina_on && !(self.styleMask & (NSWindowStyleMaskTitled | NSWindowStyleMaskFullScreen)) &&
++            !NSIsEmptyRect(wineFrame))
++        {
++            NSSize nativeSize = self.frame.size;
++            NSSize size = wineFrame.size;
++            if ((nativeSize.width - size.width == 0.5 || nativeSize.height - size.height == 0.5) &&
++                fabs(nativeSize.width - size.width) <= 0.5 && fabs(nativeSize.height - size.height) <= 0.5)
++                newShape = frameShape = CGPathCreateWithRect(CGRectMake(0, 0, size.width, size.height), NULL);
++        }
++        self.retinaFrameShape = frameShape != NULL;
++        if (CGPathEqualToPath(newShape, mask.path))
++        {
++            if (frameShape) CGPathRelease(frameShape);
++            return;
++        }
+ 
+         if (newShape && !layer.mask)
+@@ -2151,5 +2172,14 @@
+             [[self contentView] setNeedsDisplayInRect:NSRectFromCGRect(CGPathGetBoundingBox(newShape))];
+ 
+-        mask.path = newShape;
++        if (frameShape)
++        {
++            [CATransaction begin];
++            [CATransaction setDisableActions:YES];
++            mask.contentsScale = 2.0;
++            mask.path = frameShape;
++            [CATransaction commit];
++            CGPathRelease(frameShape);
++        }
++        else mask.path = newShape;
+         self.shapeChangedSinceLastDraw = TRUE;
+ 

@@ -281,3 +281,11 @@ to check that an existing wineserver does not retain the setup lock, and that a
 second setup finishes while that server remains alive. It also exercises the
 period before the server flushes `system.reg`, when completed configuration
 must not run again against the previous display session.
+
+## Retina popup frame
+
+`retina-popup-frame.c` opens nonactivating Win32 popups near the right edge for 20 seconds. Build it with the command at the top of the file and run it in a separate Wine prefix. Capture the *Frame probe odd*, *even*, and *shaped* windows, plus the single-axis and resize cases, individually using their macOS window IDs (`screencapture -x -o -l ID output.png`). The captures work while another app has focus.
+
+On an Apple M4 Mac, stock and patched Wine Staging 11.16 in Retina mode captured the 325 × 105 Win32 popup as a 326 × 106 macOS image. The rightmost column and bottom row were opaque white, although the actual Win32 border was dark. A 326 × 106 Win32 popup had no extra pixels. A window region covering the complete 325 × 105 Win32 rectangle kept its dark border and made the extra pixels transparent. With Wine Retina mode off at 96 DPI, the odd and even popups both rendered without a white edge. The fixture uses no shadow windows or Altium code.
+
+Wine's Mac driver tracks both the requested fractional frame and the frame returned by AppKit. A separate AppKit check requested a 162.5 × 52.5 point borderless window and read back 163 × 53 points at 2× backing scale. That matches the 326 × 106 pixel macOS capture and accounts for the padding beyond the 325 × 105 pixel Win32 drawing surface. Patch 0054 masks the extra native pixels on borderless Retina windows and preserves the complete Win32 frame. Compare the patched and unpatched captures to check that only the padding changes. The fixture also checks even dimensions, application-supplied regions, and a resize from odd to even dimensions.
