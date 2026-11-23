@@ -1,0 +1,59 @@
+From: Altium-on-Wine kit
+Subject: gdiplus: use Windows font cell metrics from OS/2
+
+Native GDI+ reports the OS/2 Windows ascent and descent for Consolas,
+while its line spacing includes the hhea line gap. Using hhea for both
+gives callers a smaller cell height even when the line spacing matches.
+Altium uses the cell height to size schematic text before DirectWrite
+lays it out. The mismatch shifts schematic labels above their anchors.
+Keep line spacing separate and preserve the fallback for fonts without
+usable Windows metrics.
+
+--- a/dlls/gdiplus/font.c
++++ b/dlls/gdiplus/font.c
+@@ -639,7 +639,8 @@
+     TT_OS2_V2 tt_os2;
+     TT_HHEA tt_hori;
+     LONG size;
+-    UINT16 line_gap;
++    UINT16 line_gap, win_ascent, win_descent;
++    BOOL have_hhea = FALSE;
+ 
+     otm.otmSize = sizeof(otm);
+     if (!GetOutlineTextMetricsW(hdc, otm.otmSize, &otm)) return FALSE;
+@@ -656,20 +657,29 @@
+         line_gap = GET_BE_WORD(tt_hori.LineGap);
+         fm->line_spacing = fm->ascent + fm->descent + line_gap;
+         TRACE("line_gap %u, line_spacing %u\n", line_gap, fm->line_spacing);
+-        if (fm->ascent + fm->descent != 0) return TRUE;
++        have_hhea = fm->ascent || fm->descent;
+     }
+ 
+     size = GetFontData(hdc, MS_OS2_TAG, 0, NULL, 0);
+-    if (size == GDI_ERROR) return FALSE;
++    if (size == GDI_ERROR || size < FIELD_OFFSET(TT_OS2_V2, usWinDescent) + sizeof(tt_os2.usWinDescent))
++        return have_hhea;
+ 
+     if (size > sizeof(tt_os2)) size = sizeof(tt_os2);
+ 
+     memset(&tt_os2, 0, sizeof(tt_os2));
+-    if (GetFontData(hdc, MS_OS2_TAG, 0, &tt_os2, size) != size) return FALSE;
++    if (GetFontData(hdc, MS_OS2_TAG, 0, &tt_os2, size) != size) return have_hhea;
+ 
+-    fm->ascent = GET_BE_WORD(tt_os2.usWinAscent);
+-    fm->descent = GET_BE_WORD(tt_os2.usWinDescent);
+-    TRACE("usWinAscent %u, usWinDescent %u\n", fm->ascent, fm->descent);
++    /* The Windows cell extent and the typographic line spacing can differ. */
++    win_ascent = GET_BE_WORD(tt_os2.usWinAscent);
++    win_descent = GET_BE_WORD(tt_os2.usWinDescent);
++    TRACE("usWinAscent %u, usWinDescent %u\n", win_ascent, win_descent);
++    if (win_ascent || win_descent || !have_hhea)
++    {
++        fm->ascent = win_ascent;
++        fm->descent = win_descent;
++    }
++    if (have_hhea) return TRUE;
++
+     if (fm->ascent + fm->descent == 0)
+     {
+         fm->ascent = GET_BE_WORD(tt_os2.sTypoAscender);

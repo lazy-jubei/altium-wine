@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <stdio.h>
+#include <string.h>
 
 struct tab {
     HWND window, page;
@@ -15,6 +16,7 @@ static const RECT canvas = {80, 44, 680, 400};
 static HWND home, home_page, other_gdi, other_page, banner;
 static struct tab blue, green;
 static unsigned int tick;
+static BOOL check_retirement_order;
 
 static HRESULT prepare_canvas(struct tab *tab, HWND hwnd)
 {
@@ -139,10 +141,33 @@ static LRESULT CALLBACK root_proc(HWND window, UINT msg, WPARAM wp, LPARAM lp)
             mark("blue hidden with no replacement");
             break;
         case 78:
+            if (!check_retirement_order) PostQuitMessage(0);
+            else
+            {
+                ShowWindow(blue.page, SW_SHOWNA);
+                mark("blue shown before successive retirements");
+            }
+            break;
+        case 81:
+            ShowWindow(blue.page, SW_HIDE);
+            ShowWindow(green.page, SW_SHOWNA);
+            mark("green shown with its previously presented frame");
+            break;
+        case 82:
+            ShowWindow(green.page, SW_HIDE);
+            paint_disconnected_strips(window);
+            mark("both canvases retired, green was most recent");
+            break;
+        case 85:
+            ShowWindow(other_page, SW_SHOWNA);
+            UpdateWindow(other_gdi);
+            break;
+        case 88:
             PostQuitMessage(0);
             break;
         }
-        if ((tick >= 14 && tick < 26) || (tick >= 52 && tick < 62) || (tick >= 68 && tick < 70)) present_canvas(&blue, blue_color);
+        if ((tick >= 14 && tick < 26) || (tick >= 52 && tick < 62) || (tick >= 68 && tick < 70)
+            || (check_retirement_order && tick >= 78 && tick < 81)) present_canvas(&blue, blue_color);
         if (tick >= 29 && tick < 40) present_canvas(&green, green_color);
         return 0;
     }
@@ -164,7 +189,7 @@ static HWND child(HWND parent, const WCHAR *class_name, const RECT *rect, BOOL v
         parent, NULL, GetModuleHandleW(NULL), NULL);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     HINSTANCE instance = GetModuleHandleW(NULL);
     WNDCLASSW root_class = {.lpfnWndProc = root_proc, .hInstance = instance, .lpszClassName = L"CompositionProbe"};
@@ -174,6 +199,7 @@ int main(void)
     WNDCLASSW page_class = {.lpfnWndProc = DefWindowProcW, .hInstance = instance, .lpszClassName = L"CompositionPage"};
     RECT banner_rect = {10, 10, 50, 400}, child_rect = {0, 0, 600, 356};
     MSG message;
+    check_retirement_order = argc > 1 && !strcmp(argv[1], "--retirement-order");
     setvbuf(stdout, NULL, _IONBF, 0);
     if (!RegisterClassW(&root_class) || !RegisterClassW(&gdi_class) || !RegisterClassW(&gpu_class) ||
         !RegisterClassW(&binder_class) || !RegisterClassW(&page_class)) return 1;

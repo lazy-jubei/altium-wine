@@ -196,6 +196,8 @@ The baseline must deadlock. The patched helper must finish direct, nested, semap
 
 `gdiplus-text-bounds.c` checks 90 single-line bounds against Microsoft GDI+ reference measurements for Verdana, Arial and Tahoma, regular/bold, 9/12 points and 12 pixels, 96/144/192 DPI, and pixel/point/millimeter graphics page units. Build with MinGW and `-luser32`; both patched Wine architectures pass. Its 0.11-pixel tolerance allows GDI rounding. Width, fallback glyphs and line-breaking compatibility are outside this probe.
 
+`gdiplus-cell-metrics.cpp` checks that Consolas uses its Windows ascent and descent while retaining the same line spacing and font height. Build with MinGW C++ and `-lgdiplus`. Install the kit's `pptfonts` dependency before running it under Wine.
+
 `VaultCodecCheck` is a .NET Framework 4.8/x86 probe for AD17’s parameter decoder. Build its project, then run the executable under Wine with a local `VaultExplorer.Common.dll` path (and optionally the AD17 `System` directory). It checks valid encodings, literal/truncated underscores and the two legacy suffixes: original 7/13, corrected 13/13. No vendor assemblies are included.
 
 `tools/VaultDpiFix` is a separate local AD17.1 layout correction; see the technical notes. It never overwrites its input or accepts an unknown Altium assembly.
@@ -280,6 +282,9 @@ and `WINE_MAC_CLIENT_PRESENT_HANDOFF=1`. The canvas should go directly from blue
 to green despite the opposing strip paints. It should also show the yellow
 software page, display red when selected, and return to the backing image after
 the final blue view hides without a replacement.
+Pass `--retirement-order` to also retire the blue and green views in succession
+before an opaque paint replaces both. The green frame should stay visible until
+the yellow software page takes over.
 
 `vulkan-device-check.c` loads `vulkan-1.dll` and requires instance creation plus
 at least one physical device. It checks the rebuilt Win32u's host-loader and

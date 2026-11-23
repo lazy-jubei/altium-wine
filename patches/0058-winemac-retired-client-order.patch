@@ -1,0 +1,28 @@
+From: Altium-on-Wine kit
+Subject: winemac: preserve the stacking order of retired client views
+
+Rapid switches can leave multiple Metal canvases awaiting a replacement
+frame. Putting each retired view at the bottom leaves the oldest canvas
+above all the newer fallbacks. Put each fallback above the one retired
+before it and keep live views above that stack.
+
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -634,10 +634,16 @@
+         if (!sharesViewport) return NO;
+ 
+         if (!retiredClients) retiredClients = [[NSMutableArray alloc] init];
++        WineContentView *latest = retiredClients.lastObject;
+         [retiredClients addObject:view];
+         view.clientRetired = YES;
+         view.clientBackingReady = NO;
+-        [self addSubview:view positioned:NSWindowBelow relativeTo:nil];
++
++        /* Keep the latest fallback above earlier canvases and below live views. */
++        if (latest)
++            [self addSubview:view positioned:NSWindowAbove relativeTo:latest];
++        else
++            [self addSubview:view positioned:NSWindowBelow relativeTo:nil];
+ 
+         /* Most handoffs finish at the next present or opaque GDI update.
+          * Bound retention if the application hides the view without replacing it. */

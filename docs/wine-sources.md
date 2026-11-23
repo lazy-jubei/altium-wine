@@ -39,7 +39,8 @@ FreeType headers and checks that both backends are enabled.
 `0029` prevents synchronous Cocoa callbacks from waiting on the main thread itself.
 `0030` corrects GDI+ font heights for the drawing surface DPI and pixel font units;
 `0031` retains Staging’s GDI+ image-scaling optimizations;
-`0032` corrects fractional measured text height and default vertical overhang.
+`0032` corrects fractional measured text height and default vertical overhang;
+`0057` reports Windows font cell ascent and descent separately from horizontal line spacing.
 `0033` exposes Wine’s containing window to macOS accessibility clients.
 `0034` extends the floating-panel activation fix to modern Altium (`X2.EXE`).
 `0035` replaces mouse interception with a guarded view-hide activation transfer,
@@ -80,6 +81,8 @@ the replacement presents or software painting covers the old viewport. The Mac
 driver and Win32u are built together so Win32u can report the opaque paint.
 `0056` preserves the opacity of Windows color cursor and icon edges in Core
 Graphics by marking the bitmap produced by `DrawIconEx` as premultiplied.
+`0058` keeps the most recently retired Metal canvas above earlier fallback
+canvases when several switches occur before the replacement paints.
 `wow64cpu.dll` and `user32.dll` are transformed from the checksum-pinned stock
 bundle by two Python patchers in `patches/`. The server is compiled from source. No other stock modules are
 distributed in this repository's module archive.
