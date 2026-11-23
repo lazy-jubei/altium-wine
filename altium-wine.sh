@@ -700,6 +700,7 @@ select_ad26_dxmt() {
     export DXMT_SHADER_CACHE=0
     # Preserve transparent GDI controls drawn over the accelerated PCB view.
     export WINE_MAC_GDI_READBACK="${WINE_MAC_GDI_READBACK:-1}"
+    export WINE_MAC_CLIENT_PRESENT_HANDOFF="${WINE_MAC_CLIENT_PRESENT_HANDOFF:-1}"
     say "Using DXMT for Altium Designer 26"
 }
 

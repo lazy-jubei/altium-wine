@@ -1,0 +1,15 @@
+--- a/dlls/winemac.drv/image.c
++++ b/dlls/winemac.drv/image.c
+@@ -63,7 +63,10 @@
+     for (i = 0, ptr = (DWORD*)color_bits; i < width * height; i++, ptr++)
+         if ((has_alpha = (*ptr & 0xff000000) != 0)) break;
+ 
+-    if (has_alpha)
+-        alpha_format = kCGImageAlphaFirst;
++    /* DrawIconEx alpha-blends onto the cleared DIB, producing premultiplied
++     * color. Pass it to Core Graphics in that format to preserve translucent
++     * edges on both icons and cursors. */
++    if (has_alpha)
++        alpha_format = kCGImageAlphaPremultipliedFirst;
+     else
+         alpha_format = kCGImageAlphaNoneSkipFirst;

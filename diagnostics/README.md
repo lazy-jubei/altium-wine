@@ -272,6 +272,15 @@ readback header with Metal factory/allocation doubles and checks cleanup after
 command-buffer, encoder, pixel-cache and crop allocation failures. It requires
 macOS and Xcode command line tools; no Wine prefix or GPU work is used.
 
+`metal-client-handoff.c` reproduces a canvas switch with two Direct3D views and
+software-rendered pages. Two separate side strips dirty a combined rectangle
+that spans the old canvas during the switch. Build it as a console executable
+with the same libraries as above and run it with DXMT, `WINE_MAC_GDI_READBACK=1`
+and `WINE_MAC_CLIENT_PRESENT_HANDOFF=1`. The canvas should go directly from blue
+to green despite the opposing strip paints. It should also show the yellow
+software page, display red when selected, and return to the backing image after
+the final blue view hides without a replacement.
+
 `vulkan-device-check.c` loads `vulkan-1.dll` and requires instance creation plus
 at least one physical device. It checks the rebuilt Win32u's host-loader and
 portability-enumeration path without requiring Vulkan SDK headers.

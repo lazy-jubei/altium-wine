@@ -75,6 +75,11 @@ without it the rebuilt Win32u cannot discover MoltenVK devices.
 `0053` retains the enabled Wine Staging Win32u patches for keyboard-layout
 enumeration, window-message ordering, recursive activation and transformed text.
 The disabled mouse-message patch is excluded.
+`0055` keeps the outgoing Metal client visible during a canvas transition until
+the replacement presents or software painting covers the old viewport. The Mac
+driver and Win32u are built together so Win32u can report the opaque paint.
+`0056` preserves the opacity of Windows color cursor and icon edges in Core
+Graphics by marking the bitmap produced by `DrawIconEx` as premultiplied.
 `wow64cpu.dll` and `user32.dll` are transformed from the checksum-pinned stock
 bundle by two Python patchers in `patches/`. The server is compiled from source. No other stock modules are
 distributed in this repository's module archive.
