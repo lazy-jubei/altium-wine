@@ -48,7 +48,7 @@ The first run:
 
 1. Downloads the WineHQ macOS build (Gcenx wine-staging 11.16, about 185 MB, checksum-verified).
 2. Builds the patched Wine (`build-patched-wine.sh`, about 15 min the first time). It needs the Xcode Command Line Tools and MacPorts (for bison), unless `PATCHED_MODULES_DIR` points at prebuilt modules.
-3. Creates the prefix, installs core fonts and starts the chosen installer.
+3. Creates the prefix, installs Microsoft core fonts, Aptos, and the PowerPoint Viewer fonts including Consolas, then starts the chosen installer. Winetricks downloads these for local use in the Wine prefix. Re-running setup installs newly added fonts in existing prefixes.
 
 DXVK-macOS (about 4 MB, checksum-verified) is downloaded the first time you `run`.
 

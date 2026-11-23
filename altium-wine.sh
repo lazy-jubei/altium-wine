@@ -38,7 +38,7 @@ WINE_FLAVOR="staging"
 WINE_VERSION="latest"
 PINNED_WINE_VERSION="11.16"
 WINDOWS_VERSION="win10"
-WINETRICKS_VERBS="corefonts"
+WINETRICKS_VERBS="corefonts aptos pptfonts"
 EXTRA_DLLOVERRIDES=""
 IMAGE_SIZE="200g"
 RETINA_MODE="auto"
@@ -425,28 +425,38 @@ ensure_cabextract() {  # winetricks needs cabextract; it comes from MacPorts
 }
 
 cmd_deps() {
+    local verb verbs="${*:-$WINETRICKS_VERBS}" installed="$PREFIX/.altium-kit-deps"
+    local args=() pending=()
+    for verb in $verbs; do
+        if [ "$#" -eq 0 ] && [ -f "$installed" ] && awk -v verb="$verb" '
+            { for (i = 1; i <= NF; i++) if ($i == verb) found = 1 }
+            END { exit !found }
+        ' "$installed"; then
+            continue
+        fi
+        pending+=("$verb")
+        case "$verb" in
+            aptos) args+=("$KIT_DIR/tools/aptos.verb") ;;
+            *)     args+=("$verb") ;;
+        esac
+    done
+    [ "${#args[@]}" -gt 0 ] || return 0
+
     ensure_setup
-    local verbs="$*"
-    [ -n "$verbs" ] || verbs="$WINETRICKS_VERBS"
-    if [ -z "$verbs" ]; then
-        say "No winetricks verbs configured."
-        return 0
-    fi
     ensure_winetricks
     if ! ensure_cabextract; then
-        warn "cabextract isn't available; skipping winetricks ($verbs)."
+        warn "cabextract isn't available; skipping winetricks (${pending[*]})."
         warn "Run setup again to retry installing it with MacPorts (https://www.macports.org)."
         return 0
     fi
     wine_env "err+all"
     local log="$LOG_DIR/$TS-winetricks.log"
-    say "winetricks: $verbs  (log: logs/$(basename "$log"))"
-    # shellcheck disable=SC2086
-    WINE="$WINE" WINESERVER="$WINESERVER" sh "$WINETRICKS" -q --unattended $verbs >> "$log" 2>&1
+    say "winetricks: ${pending[*]}  (log: logs/$(basename "$log"))"
+    WINE="$WINE" WINESERVER="$WINESERVER" sh "$WINETRICKS" -q --unattended "${args[@]}" >> "$log" 2>&1
     local rc=$?
     "$WINESERVER" -w
     if [ $rc -eq 0 ]; then
-        echo "$verbs" >> "$PREFIX/.altium-kit-deps"
+        printf '%s\n' "${pending[@]}" >> "$installed"
         say "winetricks finished."
     else
         warn "winetricks exited with $rc; see $log"
@@ -1063,9 +1073,7 @@ main() {
     case "$cmd" in
         default)
             ensure_setup
-            if [ -n "$WINETRICKS_VERBS" ] && ! grep -qxF "$WINETRICKS_VERBS" "$PREFIX/.altium-kit-deps" 2>/dev/null; then
-                cmd_deps
-            fi
+            cmd_deps
             cmd_install "$@"
             ;;
         setup)      cmd_setup "$@" ;;

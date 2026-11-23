@@ -14,9 +14,9 @@ PINNED_WINE_VERSION="11.16"   # fallback if "latest" can't be resolved/downloade
 # Windows version reported to apps: win10 | win11
 WINDOWS_VERSION="win10"
 
-# winetricks verbs installed by `deps` (and on first default run).
+# winetricks verbs installed by `deps` when missing. `pptfonts` includes Consolas.
 # Candidates if logs point at them: dotnet48 msxml6 gdiplus vcrun2022
-WINETRICKS_VERBS="corefonts"
+WINETRICKS_VERBS="corefonts aptos pptfonts"
 
 # Extra DLL overrides, ';'-separated, e.g. "gdiplus=n,b;msxml6=n,b"
 EXTRA_DLLOVERRIDES=""

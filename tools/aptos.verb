@@ -1,0 +1,38 @@
+# Download Microsoft Aptos for local installation into the Wine prefix.
+w_metadata aptos fonts \
+    title="Microsoft Aptos fonts" \
+    publisher="Microsoft" \
+    year="2024" \
+    media="download" \
+    file1="Microsoft-Aptos-Fonts.zip" \
+    installed_file1="${W_FONTSDIR_WIN}/Aptos-Serif-Bold-Italic.ttf"
+
+load_aptos()
+(
+    w_download 'https://download.microsoft.com/download/8/6/0/860a94fa-7feb-44ef-ac79-c072d9113d69/Microsoft%20Aptos%20Fonts.zip' \
+        6528fd120e719a9f985e94214eca6887d1653b88456916a792a630b02e95b025 Microsoft-Aptos-Fonts.zip
+    w_try_unzip "$W_TMP" "$W_CACHE/aptos/Microsoft-Aptos-Fonts.zip" 'Aptos*.ttf'
+    set -- "$W_TMP"/Aptos*.ttf
+    [ "$#" -eq 28 ] || w_die "Expected 28 fonts in the Microsoft Aptos archive."
+
+    # Copy the completion file last so a failed installation can be retried.
+    aptos_completion="$W_TMP/Aptos-Serif-Bold-Italic.ttf"
+    for aptos_font; do
+        [ "$aptos_font" = "$aptos_completion" ] || w_try cp "$aptos_font" "$W_FONTSDIR_UNIX/"
+    done
+
+    # Register the family in one import so Wine does not start regedit for every font.
+    {
+        printf 'REGEDIT4\n'
+        for aptos_registry in 'Windows NT' Windows; do
+            printf '\n[HKEY_LOCAL_MACHINE\\Software\\Microsoft\\%s\\CurrentVersion\\Fonts]\n' "$aptos_registry"
+            for aptos_font; do
+                aptos_file="${aptos_font##*/}"
+                aptos_name="$(printf '%s' "${aptos_file%.ttf}" | tr '-' ' ')"
+                printf '"%s (TrueType)"="%s"\n' "$aptos_name" "$aptos_file"
+            done
+        done
+    } > "$W_TMP/aptos-fonts.reg" || w_die "Could not generate the Microsoft Aptos registry entries."
+    w_try_regedit "$W_TMP_WIN\\aptos-fonts.reg"
+    w_try cp "$aptos_completion" "$W_FONTSDIR_UNIX/"
+)

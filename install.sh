@@ -191,7 +191,7 @@ Everything else runs on its own. You need your own Altium license." 'Start' 'Wel
         echo "  Downloads:         Wine 11.16 sources + llvm-mingw (the patched modules are built here),"
     fi
     echo "                     wine-staging 11.16 (~185 MB, github.com/Gcenx), DXVK-macOS (~4 MB),"
-    echo "                     core fonts via winetricks"
+    echo "                     Microsoft fonts via winetricks"
     [ $skip_altium = 0 ] && echo "  Altium installer:  $altium_src"
     [ $launcher = 1 ] && echo "  Launcher:          ~/Applications/Altium Designer (Wine).app"
     echo
@@ -263,10 +263,8 @@ Everything else runs on its own. You need your own Altium license." 'Start' 'Wel
         say "Updating the patched Wine"
         bash "$kit/build-patched-wine.sh" --modules "$modules" < "$TTY_IN" || die "Updating the patched Wine failed."
     fi
-    if [ ! -f "$(prefix_dir "$root")/.altium-kit-deps" ]; then
-        ui_stage wine "installing fonts"
-        bash "$aw" deps < "$TTY_IN" || warn "winetricks had problems; see $kit/logs. Altium may show some text in fallback fonts."
-    fi
+    ui_stage wine "installing fonts"
+    bash "$aw" deps < "$TTY_IN" || warn "winetricks had problems; see $kit/logs. Altium may show some text in fallback fonts."
 
     # ---- Altium -------------------------------------------------------------------------
     if [ $skip_altium = 0 ]; then
