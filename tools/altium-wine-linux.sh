@@ -2,7 +2,7 @@
 # Linux entry point, called by the kit's install.sh and altium-wine.sh.
 set -euo pipefail
 
-KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 . "$KIT_DIR/tools/altium-prefix.sh"
 
 die() { printf 'Altium Wine: %s\n' "$*" >&2; exit 1; }
@@ -15,6 +15,7 @@ Altium Designer on Linux (x86-64)
   bash install.sh --skip-altium [--root DIR]
   bash build-patched-wine.sh   Build the Linux Wine networking and drawing modules
   bash altium-wine.sh setup
+  bash altium-wine.sh update [--check] [--root DIR] [--no-launcher]
   bash altium-wine.sh install PATH
   bash altium-wine.sh run [FILE ...]
   bash altium-wine.sh launcher
@@ -38,9 +39,10 @@ LLVM_TAG=20261117
 LLVM_PACKAGE="llvm-mingw-$LLVM_TAG-ucrt-ubuntu-22.04-x86_64"
 LLVM_SHA256=e7a15a49a2ea95e9f3d8a9d0cfabe5052a4b10fb4777cc54de5a8c27b64bb701
 WINE_SOURCE_REV=9f8c4ae4d35c7ff4153267aba9618c026f5f5583
+RELEASES_URL=https://github.com/lazy-jubei/altium-wine/releases
 
 set_paths() {
-    ROOT="$(realpath -m -- "${ALTIUM_WINE_ROOT:-$HOME/AltiumWineLinux}")"
+    ROOT="$(realpath -m -- "${1:-${ALTIUM_WINE_ROOT:-$HOME/AltiumWineLinux}}")"
     PREFIX="$ROOT/prefix"
     DOWNLOADS="$ROOT/downloads"
     LOGS="$ROOT/logs"
@@ -64,7 +66,7 @@ download() (
     temporary="$(mktemp -- "$archive.XXXXXX")"
     trap 'rm -f -- "$temporary"' EXIT
     printf 'Downloading %s\n' "${archive##*/}" >&2
-    curl --proto '=https' -fLsS --retry 2 -o "$temporary" "$url"
+    curl --proto '=https' --proto-redir '=https' -fLsS --retry 2 -o "$temporary" "$url"
     sha_matches "$checksum" "$temporary" || die "Checksum mismatch for ${archive##*/}"
     mv -T -- "$temporary" "$archive"
 )
@@ -199,6 +201,10 @@ build_wine_modules() (
     printf 'Built Wine modules in %s. Restart Designer to load them.\n' "$output"
 )
 
+prefix_prepared() {
+    [[ -f "$PREFIX/.altium-linux-setup" && -f "$PREFIX/drive_c/windows/system32/kernel32.dll" ]]
+}
+
 setup() (
     ensure_wine
     mkdir -p -- "$LOGS"
@@ -209,7 +215,7 @@ setup() (
     apply_built_modules
     # wineserver may still have its registry buffered when setup finishes.
     # Reconfiguring that live prefix can wait on its previous display session.
-    [[ -f "$PREFIX/.altium-linux-setup" && -f "$PREFIX/drive_c/windows/system32/kernel32.dll" ]] && return
+    prefix_prepared && return
     local log
     log="$(mktemp --suffix=.log "$LOGS/setup.XXXXXX")"
     printf 'Preparing %s (log %s)\n' "$PREFIX" "$log"
@@ -425,8 +431,133 @@ desktop_quote() {
     printf '"%s"' "${value//%/%%}"
 }
 
+release_kit() {
+    local path
+    path="$(realpath -e -- "$1")" || return 1
+    [[ ${path%/*} = "$ROOT/kits" && ${path##*/} =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ &&
+        -s "$path/.release-sha256" && -f "$path/altium-wine.sh" ]] || return 1
+    printf '%s\n' "$path"
+}
+
+version_is_newer() {
+    [[ $1 != "$2" && $(printf '%s\n' "$1" "$2" | sort -V | tail -n 1) = "$1" ]]
+}
+
+has_update_prefix() {
+    prefix_prepared || [[ -s "$PREFIX/system.reg" ]]
+}
+
+require_update_prefix() {
+    has_update_prefix ||
+        die "No existing Wine prefix in $ROOT. Run install.sh to set one up."
+}
+
+migrate_launcher() (
+    local desktop="${XDG_DATA_HOME:-$HOME/.local/share}/applications/altium-wine-linux.desktop"
+    local root_arg new_script line temporary changed=0
+    [[ -f $desktop && ! -L $desktop ]] || return 0
+    root_arg="$(desktop_quote "ALTIUM_WINE_ROOT=$ROOT")"
+    new_script="$(desktop_quote "$ROOT/kits/current/altium-wine.sh")"
+    temporary="$(mktemp -- "${desktop}.XXXXXX")"
+    trap 'rm -f -- "$temporary"' EXIT
+    while IFS= read -r line || [[ -n $line ]]; do
+        # Only migrate the command written by our launcher for this prefix.
+        # Keep its other arguments and desktop entry fields verbatim.
+        if [[ $line = "Exec=/usr/bin/env $root_arg "* &&
+            $line = *' /bin/bash "'*'/altium-wine.sh" run %F' &&
+            $line != *" /bin/bash $new_script run %F" ]]; then
+            line="${line% /bin/bash *} /bin/bash $new_script run %F"
+            changed=1
+        fi
+        printf '%s\n' "$line"
+    done < "$desktop" > "$temporary"
+    (( changed )) || return 0
+    chmod --reference="$desktop" "$temporary"
+    mv -T -- "$temporary" "$desktop"
+    printf 'Updated launcher path in %s\n' "$desktop"
+)
+
+activate_release_kit() (
+    local kit="$1" update="$2" launcher="$3" previous stage
+    exec 4>"$ROOT/kits/.activation.lock"
+    flock 4
+    [[ ! -e "$ROOT/kits/current" || -L "$ROOT/kits/current" ]] ||
+        die "Cannot activate the kit because $ROOT/kits/current is occupied."
+    previous="$(release_kit "$ROOT/kits/current" 2>/dev/null)" || previous=""
+    if [[ -n $previous ]] && version_is_newer "${previous##*/}" "${kit##*/}"; then
+        kit="$previous"
+    fi
+    if [[ $previous != "$kit" ]]; then
+        stage="$(mktemp -d -- "$ROOT/kits/.activate.XXXXXX")"
+        trap 'rm -rf -- "$stage"' EXIT
+        ln -s -- "${kit##*/}" "$stage/current"
+        mv -Tf -- "$stage/current" "$ROOT/kits/current"
+    fi
+    if (( update && launcher )); then migrate_launcher; fi
+    printf 'Active kit: %s\n' "${kit##*/}"
+)
+
+update_kit() (
+    local check=0 launcher=1 latest tag current active called_kit stage checksum
+    local update_root="${ALTIUM_WINE_ROOT:-}"
+    while (( $# )); do
+        case "$1" in
+            --check) check=1 ;;
+            --root) update_root="${2:?--root needs a directory}"; shift ;;
+            --no-launcher) launcher=0 ;;
+            --help|-h) usage; return ;;
+            *) die "Unknown updater option: $1 (try update --help)" ;;
+        esac
+        shift
+    done
+    if [[ -z $update_root ]]; then
+        called_kit="$(realpath -e -- "$KIT_DIR")"
+        if [[ $called_kit = */kits/v* && -s "$called_kit/.release-sha256" ]]; then
+            update_root="${called_kit%/kits/*}"
+        fi
+    fi
+    set_paths "$update_root"
+    latest="$(curl --proto '=https' --proto-redir '=https' -fLsSI --retry 2 -o /dev/null \
+        -w '%{url_effective}' "$RELEASES_URL/latest")" || die 'Could not check for the latest kit release.'
+    tag="${latest#"$RELEASES_URL/tag/"}"
+    [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die 'GitHub did not return a valid kit release tag.'
+    active="$(release_kit "$ROOT/kits/current" 2>/dev/null)" || active=""
+    current="${active:-$(release_kit "$KIT_DIR" || true)}"
+    if [[ -n $current ]]; then
+        printf 'Installed kit: %s\n' "${current##*/}"
+    else
+        printf 'Installed kit: no active release recorded\n'
+    fi
+    printf 'Latest kit:    %s\n' "$tag"
+    if [[ -n $current ]] && ! version_is_newer "$tag" "${current##*/}" &&
+        { (( check )) || [[ -n $active ]]; }; then
+        printf 'The installed kit is up to date.\n'
+        if (( ! check && launcher )); then activate_release_kit "$active" 1 1; fi
+        return
+    fi
+    if (( check )); then
+        if has_update_prefix; then
+            printf 'Run bash altium-wine.sh update to install %s.\n' "$tag"
+        else
+            printf 'No Wine prefix in %s. Run install.sh to set one up.\n' "$ROOT"
+        fi
+        return
+    fi
+    require_update_prefix
+    stage="$(mktemp -d)"
+    trap 'rm -rf -- "$stage"' EXIT
+    curl --proto '=https' --proto-redir '=https' -fLsS --retry 2 -o "$stage/SHA256SUMS" \
+        "$RELEASES_URL/download/$tag/SHA256SUMS" || die "Could not download checksums for $tag."
+    checksum="$(awk '$2 == "install.sh" || $2 == "*install.sh" { print $1 }' "$stage/SHA256SUMS")"
+    [[ $checksum =~ ^[a-f0-9]{64}$ ]] || die "Missing or invalid install.sh checksum for $tag."
+    download "$RELEASES_URL/download/$tag/install.sh" "$stage/install.sh" "$checksum" || exit 1
+    local options=(--update --root "$ROOT")
+    if (( ! launcher )); then options+=(--no-launcher); fi
+    bash "$stage/install.sh" "${options[@]}"
+)
+
 make_launcher() (
-    local exe directory desktop temporary extracted icon=""
+    local exe directory desktop temporary extracted icon="" kit="$KIT_DIR"
     if ! exe="$(get_altium)" || [[ -z $exe ]]; then
         die 'Install Altium before creating the launcher.'
     fi
@@ -451,7 +582,11 @@ make_launcher() (
                 AD26_CEF_FALLBACK AD26_CEF_SOFTWARE_RENDERING; do
             [[ -z ${!setting:-} ]] || printf ' %s' "$(desktop_quote "$setting=${!setting}")"
         done
-        printf ' /bin/bash %s run %%F\n' "$(desktop_quote "$KIT_DIR/altium-wine.sh")"
+        if release_kit "$KIT_DIR" >/dev/null &&
+            release_kit "$ROOT/kits/current" >/dev/null 2>&1; then
+            kit="$ROOT/kits/current"
+        fi
+        printf ' /bin/bash %s run %%F\n' "$(desktop_quote "$kit/altium-wine.sh")"
     } > "$temporary"
     if command -v desktop-file-validate >/dev/null; then
         desktop-file-validate "$temporary"
@@ -462,12 +597,14 @@ make_launcher() (
 )
 
 install_main() {
-    local source="" skip=0 reinstall=0 launcher=1 build=0 exe
+    local source="" skip=0 reinstall=0 launcher=1 build=0 update=0 exe kit active
+    local args=("$@")
     while (( $# )); do
         case "$1" in
             --root) export ALTIUM_WINE_ROOT="${2:?--root needs a directory}"; shift ;;
             --altium-installer) source="${2:?--altium-installer needs a path}"; shift ;;
             --skip-altium) skip=1 ;;
+            --update) update=1 ;;
             --reinstall-altium) reinstall=1 ;;
             --no-launcher) launcher=0 ;;
             --build-from-source) build=1 ;;
@@ -478,6 +615,31 @@ install_main() {
         shift
     done
     set_paths
+    kit="$(release_kit "$KIT_DIR")" || kit=""
+    if [[ -n $kit ]] && active="$(release_kit "$ROOT/kits/current" 2>/dev/null)" &&
+        version_is_newer "${active##*/}" "${kit##*/}"; then
+        printf 'Using the newer active kit %s.\n' "${active##*/}"
+        exec bash "$active/tools/altium-wine-linux.sh" kit-install "${args[@]}"
+    fi
+    if [[ -n $kit && -z $source ]] && (( ! skip && ! reinstall && ! build )) &&
+        has_update_prefix; then
+        update=1
+    fi
+    if (( update )); then
+        if [[ -n $source ]] || (( reinstall || build )); then
+            die '--update does not accept an Altium installer or --build-from-source.'
+        fi
+        if [[ -z $kit ]]; then
+            if (( launcher )); then update_kit; else update_kit --no-launcher; fi
+            return
+        fi
+        require_update_prefix
+        # Install a newly pinned runner before activation. Prefix patches are
+        # applied by the new kit at the next launch, without modifying a live prefix.
+        ensure_wine
+        activate_release_kit "$kit" 1 "$launcher"
+        return
+    fi
     if (( build )); then build_wine_modules; fi
     exe="$(get_altium)" || exe=""
     if (( skip )); then
@@ -488,6 +650,7 @@ install_main() {
         exe="$(get_altium)" || exe=""
         [[ -n $exe ]] || die "Setup exited before Altium was installed. See $LOGS."
     fi
+    if [[ -n $kit ]]; then activate_release_kit "$kit" 0 "$launcher"; fi
     if (( launcher )) && [[ -n $exe ]]; then make_launcher; fi
 }
 
@@ -495,10 +658,10 @@ if [[ ${1:-} == help || ${1:-} == --help || ${1:-} == -h ]]; then usage; exit 0;
 [[ $(uname -sm) == 'Linux x86_64' ]] || die 'This kit requires x86-64 Linux.'
 entry_point="${1:-install}"
 if (( $# )); then shift; fi
-if [[ $entry_point == kit-install ]]; then
-    install_main "$@"
-    exit
-fi
+case "$entry_point" in
+    kit-install) install_main "$@"; exit ;;
+    update) update_kit "$@"; exit ;;
+esac
 set_paths
 case "$entry_point" in
     setup) setup ;;

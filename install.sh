@@ -39,7 +39,7 @@ main() {
             return
         fi
         local linux_kit
-        linux_kit="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+        linux_kit="$(cd -P "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
         [ -f "$linux_kit/tools/altium-wine-linux.sh" ] ||
             die "On Linux, run install.sh from the repository checkout."
         exec bash "$linux_kit/tools/altium-wine-linux.sh" kit-install "$@"
@@ -728,15 +728,17 @@ install_linux_release() {
         case "$1" in
             --root) root="${2:?--root needs a directory}"; shift ;;
             --altium-installer) : "${2:?--altium-installer needs a path}"; shift ;;
-            --skip-altium|--reinstall-altium|--no-launcher|--build-from-source|--yes|--terminal) ;;
+            --update|--skip-altium|--reinstall-altium|--no-launcher|--build-from-source|--yes|--terminal) ;;
             -h|--help)
                 cat <<'HELP'
 Altium Designer on Linux (x86-64)
 
   bash install.sh --altium-installer PATH [--build-from-source]
+  bash install.sh --update [--root DIR]
   bash install.sh --skip-altium
 
 PATH can be the Altium online setup executable, offline ZIP, or extracted folder.
+--update updates the kit for an existing installation.
 Use --root DIR to change the install location and --no-launcher to skip the
 application menu entry. The default location is ~/AltiumWineLinux.
 HELP

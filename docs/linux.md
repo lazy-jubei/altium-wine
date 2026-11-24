@@ -15,7 +15,7 @@ bash install.sh --altium-installer "$HOME/Downloads/AltiumDesignerSetup_26_12_2.
 
 The release installer verifies the kit archive and stores it under
 `~/AltiumWineLinux/kits/<version>`. Run the terminal commands below from
-that kit directory or a repository checkout.
+`~/AltiumWineLinux/kits/current` or a repository checkout.
 
 Setup downloads and verifies a pinned x86-64 Wine Staging WoW64 build from
 [Kron4ek's Wine builds](https://github.com/Kron4ek/Wine-Builds).
@@ -41,6 +41,28 @@ executable when available.
 bash altium-wine.sh run
 bash altium-wine.sh doctor
 ```
+
+## Update
+
+From the active kit, check the installed and latest release versions, then
+apply the latest update.
+
+```sh
+bash "$HOME/AltiumWineLinux/kits/current/altium-wine.sh" update --check
+bash "$HOME/AltiumWineLinux/kits/current/altium-wine.sh" update
+```
+
+For an older installation, download the latest release installer and run
+`bash install.sh --update`. Running the latest release installer without an
+Altium installer path also updates an existing setup. Use `--root DIR` for
+a custom installation location. An update preserves your Wine prefix,
+installed Altium, logs, and desktop launcher options.
+
+To update Altium Designer itself, use **Extensions and Updates** in Designer
+or run a newer vendor installer with
+`bash install.sh --reinstall-altium --altium-installer PATH` and choose
+**Update existing version**.
+[Altium update guide](https://www.altium.com/documentation/altium-designer/installation-management/installing#updating-to-a-later-version)
 
 ## Altium 365
 

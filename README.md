@@ -29,6 +29,10 @@ bash install.sh --build-from-source --altium-installer /path/to/offline-setup.zi
 
 Open **Altium Designer (Wine)** from your application menu.
 
+To update an existing Linux installation, download the latest `install.sh`
+and run `bash install.sh --update`. The installed kit also provides
+`altium-wine.sh update` and `altium-wine.sh update --check`.
+
 ## Install on macOS
 
 Get the Altium online or offline installer from your Altium account, then download and run the [kit installer](https://github.com/lazy-jubei/altium-wine/releases/latest) from the latest release:

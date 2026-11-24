@@ -25,6 +25,7 @@ set -u
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ "$(uname -s)" = Linux ]; then
+    KIT_DIR="$(cd -P "$KIT_DIR" && pwd)" || exit 1
     exec bash "$KIT_DIR/tools/altium-wine-linux.sh" "$@"
 fi
 . "$KIT_DIR/tools/altium-prefix.sh"
