@@ -27,6 +27,14 @@ def verify_update(temporary):
         shutil.copy2(KIT / 'altium-wine.sh', kit)
         for name in ('altium-wine-linux.sh', 'altium-prefix.sh'):
             shutil.copy2(KIT / 'tools' / name, kit / 'tools')
+        write_script(kit / 'tools/exe-icon.py', '''
+            import sys
+            from pathlib import Path
+
+            output = Path(sys.argv[2] + '.png')
+            output.write_bytes(b'test logo')
+            print(output)
+        ''')
         (kit / '.release-sha256').write_text('a' * 64)
     current = kits / 'current'
     current.symlink_to('v1.5.9')
@@ -37,6 +45,9 @@ def verify_update(temporary):
     kernel.parent.mkdir(parents=True)
     kernel.touch()
     (prefix / '.altium-linux-setup').touch()
+    exe = prefix / 'drive_c/Program Files/Altium/AD26/X2.EXE'
+    exe.parent.mkdir(parents=True)
+    exe.write_text('keep this executable')
     project = prefix / 'project.txt'
     project.write_text('keep this project')
     config = root / 'config.local.sh'
@@ -48,7 +59,7 @@ def verify_update(temporary):
     old_command = f'/bin/bash "{kits}/v1.5.9/altium-wine.sh" run %F'
     new_command = f'/bin/bash "{current}/altium-wine.sh" run %F'
     desktop_content = (
-        '[Desktop Entry]\nName=My Designer\nIcon=my-custom-icon\n'
+        '[Desktop Entry]\nType=Application\nName=My Designer\nIcon=my-custom-icon\n'
         f'Exec=/usr/bin/env "ALTIUM_WINE_ROOT={root}" '
         f'"ALTIUM_WINE_RENDERER=dxvk" {old_command}\n'
     )
@@ -80,10 +91,17 @@ def verify_update(temporary):
                TEST_RELEASES=RELEASES, TEST_DOWNLOADS=str(temporary),
                TEST_NEW_KIT=str(kits / 'v1.5.10'))
     env.pop('ALTIUM_WINE_ROOT', None)
+    env.pop('ALTIUM_WINE_EXE', None)
 
-    def run(*args, kit=current, check=True):
-        return subprocess.run(['bash', str(kit / 'altium-wine.sh'), *args], env=env,
+    def run(*args, kit=current, check=True, env_overrides=None):
+        return subprocess.run(['bash', str(kit / 'altium-wine.sh'), *args],
+                              env=dict(env, **(env_overrides or {})),
                               capture_output=True, text=True, check=check, timeout=15)
+
+    def without_startup_class(launcher, expected_class):
+        entry = f'StartupWMClass={expected_class}\n'
+        assert launcher.count('StartupWMClass=') == 1 and entry in launcher
+        return launcher.replace(entry, '')
 
     result = run('update', '--check')
     assert 'Installed kit: v1.5.9' in result.stdout and 'Latest kit:    v1.5.10' in result.stdout
@@ -98,7 +116,39 @@ def verify_update(temporary):
     run('update', '--no-launcher')
     assert current.readlink() == Path('v1.5.10') and desktop.read_text() == desktop_content
     run('update')
-    assert desktop.read_text() == desktop_content.replace(old_command, new_command)
+    current_launcher = desktop_content.replace(old_command, new_command)
+    assert without_startup_class(desktop.read_text(), 'x2.exe') == current_launcher
+
+    desktop.write_text(current_launcher)
+    run('update')
+    assert without_startup_class(desktop.read_text(), 'x2.exe') == current_launcher
+
+    custom_launcher = desktop.read_text().replace('StartupWMClass=x2.exe\n',
+                                                 'StartupWMClass=CustomDesigner\n')
+    desktop.write_text(custom_launcher)
+    run('update')
+    assert desktop.read_text() == custom_launcher
+
+    dxp = exe.with_name('DXP.EXE')
+    dxp.touch()
+    legacy_launcher = current_launcher.replace(
+        '"ALTIUM_WINE_RENDERER=dxvk"', f'"ALTIUM_WINE_EXE={dxp}" "ALTIUM_WINE_RENDERER=dxvk"')
+    desktop.write_text(legacy_launcher)
+    run('update')
+    assert without_startup_class(desktop.read_text(), 'dxp.exe') == legacy_launcher
+
+    fresh_data = temporary / 'fresh-launcher'
+    fresh = fresh_data / 'applications/altium-wine-linux.desktop'
+    launcher_env = {'ALTIUM_WINE_ROOT': str(root), 'ALTIUM_WINE_RENDERER': 'dxvk',
+                    'XDG_DATA_HOME': str(fresh_data)}
+    run('launcher', env_overrides=launcher_env)
+    assert 'StartupWMClass=x2.exe\n' in fresh.read_text()
+    logo = root / 'altium-wine-launcher.png'
+    assert f'Icon={logo}\n' in fresh.read_text() and logo.read_bytes() == b'test logo'
+    assert f'"ALTIUM_WINE_RENDERER=dxvk" {new_command}' in fresh.read_text()
+
+    run('launcher', env_overrides=dict(launcher_env, ALTIUM_WINE_EXE=str(dxp)))
+    assert 'StartupWMClass=dxp.exe\n' in fresh.read_text()
 
     run('kit-install', '--root', str(root), kit=kits / 'v1.5.9')
     assert current.readlink() == Path('v1.5.10')

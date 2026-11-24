@@ -431,6 +431,14 @@ desktop_quote() {
     printf '"%s"' "${value//%/%%}"
 }
 
+desktop_startup_class() {
+    local name="${1##*/}"
+    [[ -n $name && $name != *[$'\r\n']* ]] || return 1
+    # Wine's X11 driver uses the lowercase executable name for WM_CLASS.
+    name="${name//\\/\\\\}"
+    printf 'StartupWMClass=%s\n' "${name,,}"
+}
+
 release_kit() {
     local path
     path="$(realpath -e -- "$1")" || return 1
@@ -454,8 +462,10 @@ require_update_prefix() {
 
 migrate_launcher() (
     local desktop="${XDG_DATA_HOME:-$HOME/.local/share}/applications/altium-wine-linux.desktop"
-    local root_arg new_script line temporary changed=0
+    local root_arg new_script line temporary exe startup_class changed=0 needs_class=1
+    local exe_arg=' "ALTIUM_WINE_EXE=([^"]+)" '
     [[ -f $desktop && ! -L $desktop ]] || return 0
+    if grep -q '^StartupWMClass=' "$desktop"; then needs_class=0; fi
     root_arg="$(desktop_quote "ALTIUM_WINE_ROOT=$ROOT")"
     new_script="$(desktop_quote "$ROOT/kits/current/altium-wine.sh")"
     temporary="$(mktemp -- "${desktop}.XXXXXX")"
@@ -464,17 +474,32 @@ migrate_launcher() (
         # Only migrate the command written by our launcher for this prefix.
         # Keep its other arguments and desktop entry fields verbatim.
         if [[ $line = "Exec=/usr/bin/env $root_arg "* &&
-            $line = *' /bin/bash "'*'/altium-wine.sh" run %F' &&
-            $line != *" /bin/bash $new_script run %F" ]]; then
-            line="${line% /bin/bash *} /bin/bash $new_script run %F"
-            changed=1
+            $line = *' /bin/bash "'*'/altium-wine.sh" run %F' ]]; then
+            if [[ $line != *" /bin/bash $new_script run %F" ]]; then
+                line="${line% /bin/bash *} /bin/bash $new_script run %F"
+                changed=1
+            fi
+            if (( needs_class )); then
+                if [[ $line =~ $exe_arg ]]; then
+                    exe="$(ALTIUM_WINE_EXE="${BASH_REMATCH[1]//%%/%}" get_altium)" || exe=""
+                elif [[ $line != *' "ALTIUM_WINE_EXE='* ]]; then
+                    exe="$(find_altium_exe)"
+                else
+                    exe=""
+                fi
+                if startup_class="$(desktop_startup_class "$exe")"; then
+                    printf '%s\n' "$startup_class"
+                    changed=1
+                    needs_class=0
+                fi
+            fi
         fi
         printf '%s\n' "$line"
     done < "$desktop" > "$temporary"
     (( changed )) || return 0
     chmod --reference="$desktop" "$temporary"
     mv -T -- "$temporary" "$desktop"
-    printf 'Updated launcher path in %s\n' "$desktop"
+    printf 'Updated launcher %s\n' "$desktop"
 )
 
 activate_release_kit() (
@@ -576,6 +601,7 @@ make_launcher() (
     {
         printf '[Desktop Entry]\nVersion=1.0\nType=Application\nName=Altium Designer (Wine)\n'
         if [[ -n $icon ]]; then printf 'Icon=%s\n' "${icon//\\/\\\\}"; fi
+        desktop_startup_class "$exe" || true
         printf 'Terminal=false\nCategories=Development;Electronics;\n'
         printf 'Exec=/usr/bin/env %s' "$(desktop_quote "ALTIUM_WINE_ROOT=$ROOT")"
         local setting
