@@ -67,7 +67,7 @@ def verify_update(temporary):
         set -eu
         url="${!#}"
         case "$url" in
-            "$TEST_RELEASES/latest") printf '%s/tag/v1.5.10' "$TEST_RELEASES"; exit ;;
+            "$TEST_RELEASES/latest?check="*) printf '%s/tag/v1.5.10' "$TEST_RELEASES"; exit ;;
             "$TEST_RELEASES"/download/v1.5.10/*) ;;
             *) exit 1 ;;
         esac

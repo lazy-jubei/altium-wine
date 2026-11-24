@@ -517,8 +517,10 @@ update_kit() (
         fi
     fi
     set_paths "$update_root"
+    # A cached redirect can point to the previous release after publication.
     latest="$(curl --proto '=https' --proto-redir '=https' -fLsSI --retry 2 -o /dev/null \
-        -w '%{url_effective}' "$RELEASES_URL/latest")" || die 'Could not check for the latest kit release.'
+        -w '%{url_effective}' "$RELEASES_URL/latest?check=$(date +%s)")" ||
+        die 'Could not check for the latest kit release.'
     tag="${latest#"$RELEASES_URL/tag/"}"
     [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die 'GitHub did not return a valid kit release tag.'
     active="$(release_kit "$ROOT/kits/current" 2>/dev/null)" || active=""
