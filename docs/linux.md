@@ -72,8 +72,9 @@ authorization request to Wine's host browser bridge. Designer uses the
 browser session to sign in. Select an available license and connect to the
 workspace from the workspace menu.
 
-For workspace Git cloning, build the patched Wine modules with Git, GCC,
-make, bison, flex, and m4 on `PATH`. The kit supplies a MinGW compiler if needed.
+For workspace Git cloning and schematic rendering fixes, build the patched
+Wine modules with Git, GCC, make, bison, flex, and m4 on `PATH`. The kit
+supplies a MinGW compiler if needed.
 
 ```sh
 bash build-patched-wine.sh
@@ -81,8 +82,13 @@ bash build-patched-wine.sh
 
 Restart Designer to load them. The shared WinHTTP patch lets Altium's Git
 client wait for the server to start sending a large project. The same build
-includes the shared Direct2D and DirectWrite redraw and text fixes. For a new
-install, `install.sh --build-from-source` builds the modules during setup.
+includes the Direct2D and DirectWrite redraw fixes and the shared GDI+ font
+cell metrics fix. The GDI+ fix gives schematic labels the Windows ascent
+and descent metrics that Designer uses to place text at its anchor.
+Releases with prebuilt Linux GDI+ modules apply the spacing fix on the next
+launch. Building from source also supplies the other patched modules.
+For a new install, `install.sh --build-from-source` builds the modules
+during setup.
 
 ## Rendering
 

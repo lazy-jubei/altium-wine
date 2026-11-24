@@ -2,13 +2,15 @@
 # make-release.sh - package the kit for `curl | bash` installs. Writes files locally; uploading
 # them (e.g. as GitHub release assets) is a separate, manual step.
 #
-# Usage:  bash make-release.sh --version v1.0 --url BASE_URL --modules DIR [--ad26-dxvk DIR] [--out DIR]
+# Usage:  bash make-release.sh --version v1.0 --url BASE_URL --modules DIR
+#                             [--ad26-dxvk DIR] [--linux-gdiplus DIR] [--out DIR]
 #
 #   --version  release name, used in the asset file names
 #   --url      where the assets will be downloadable, e.g.
 #              https://github.com/OWNER/altium-wine/releases/download/v1.0
 #   --modules  output of: bash build-patched-wine.sh --export DIR  (modules and SHA256SUMS)
 #   --ad26-dxvk output of: bash tools/build-ad26-dxvk.sh (default: ~/AltiumWine/build/ad26-dxvk/output)
+#   --linux-gdiplus Linux build-patched-wine.sh output directory (includes matching Wine source in the release)
 #   --out      output folder (default: ./dist/VERSION)
 #
 # Output: install.sh (stamped with the URL and checksums), altium-wine-kit-VERSION.tar.gz,
@@ -19,6 +21,7 @@ set -euo pipefail
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="" URL="" MODULES="" OUT=""
+LINUX_GDIPLUS="" LINUX_SOURCE_ARCHIVE=""
 AD26_DXVK="${AD26_DXVK_BUILD_ROOT:-${ALTIUM_WINE_ROOT:-$HOME/AltiumWine}/build/ad26-dxvk}/output"
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -26,6 +29,7 @@ while [ $# -gt 0 ]; do
         --url)     URL="${2%/}"; shift 2 ;;
         --modules) MODULES="$2"; shift 2 ;;
         --ad26-dxvk) AD26_DXVK="$2"; shift 2 ;;
+        --linux-gdiplus) LINUX_GDIPLUS="$2"; shift 2 ;;
         --out)     OUT="$2"; shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -54,7 +58,7 @@ trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/kit"
 ( cd "$KIT_DIR" && tar -cf - --exclude ./logs --exclude ./dist --exclude ./config.local.sh \
     --exclude ./.git --exclude ./.github --exclude ./__pycache__ \
-    --exclude ./renderers/ad26-dxvk-intel \
+    --exclude ./renderers/ad26-dxvk-intel --exclude ./modules/linux-gdiplus \
     --exclude '.DS_Store' --exclude '*.bak' --exclude '*.pyc' --exclude '*.out' \
     --exclude './tools/VaultDpiFix/bin' --exclude './tools/VaultDpiFix/obj' \
     --exclude './diagnostics/VaultCodecCheck/bin' --exclude './diagnostics/VaultCodecCheck/obj' . ) | tar -xf - -C "$STAGE/kit"
@@ -63,6 +67,25 @@ DXVK_STAGE="$STAGE/kit/renderers/ad26-dxvk-intel"
 mkdir -p "$DXVK_STAGE/licenses"
 cp "$AD26_DXVK/d3d11.dll" "$AD26_DXVK/d3d10core.dll" "$AD26_DXVK/SHA256SUMS" "$DXVK_STAGE/"
 cp "$AD26_DXVK/licenses/DXVK.txt" "$DXVK_STAGE/licenses/"
+if [ -n "$LINUX_GDIPLUS" ]; then
+    LINUX_WINE_SCRIPT="$KIT_DIR/tools/altium-wine-linux.sh"
+    LINUX_WINE_REV="$(sed -n 's/^WINE_SOURCE_REV=//p' "$LINUX_WINE_SCRIPT")"
+    LINUX_WINE_TAG="$(sed -n 's/^WINE_TAG=//p' "$LINUX_WINE_SCRIPT")"
+    LINUX_WINE_SOURCE="$LINUX_GDIPLUS/../wine-linux-source"
+    [[ $LINUX_WINE_REV =~ ^[0-9a-f]{40}$ && $LINUX_WINE_TAG =~ ^[0-9]+\.[0-9]+$ &&
+        "$(git -C "$LINUX_WINE_SOURCE" rev-parse HEAD)" = "$LINUX_WINE_REV" ]] \
+        || { echo "Missing matching Wine source next to $LINUX_GDIPLUS" >&2; exit 1; }
+    LINUX_GDIPLUS_STAGE="$STAGE/kit/modules/linux-gdiplus/$LINUX_WINE_REV"
+    mkdir -p "$LINUX_GDIPLUS_STAGE"
+    for f in gdiplus.dll gdiplus-i386.dll; do
+        [ -s "$LINUX_GDIPLUS/$f" ] || { echo "Missing $LINUX_GDIPLUS/$f" >&2; exit 1; }
+        cp "$LINUX_GDIPLUS/$f" "$LINUX_GDIPLUS_STAGE/"
+    done
+    ( cd "$LINUX_GDIPLUS_STAGE" && shasum -a 256 gdiplus.dll gdiplus-i386.dll > SHA256SUMS )
+    LINUX_SOURCE_ARCHIVE="wine-linux-$LINUX_WINE_TAG-source.tar.gz"
+    git -C "$LINUX_WINE_SOURCE" archive --format=tar.gz --prefix="wine-$LINUX_WINE_TAG/" "$LINUX_WINE_REV" \
+        > "$OUT/$LINUX_SOURCE_ARCHIVE"
+fi
 printf '%s\n' "$VERSION" > "$STAGE/kit/.release-version"
 KIT_TGZ="altium-wine-kit-$VERSION.tar.gz"
 COPYFILE_DISABLE=1 tar -czf "$OUT/$KIT_TGZ" -C "$STAGE" kit
@@ -105,7 +128,7 @@ sed -e "s|^KIT_VERSION=\"dev\"\$|KIT_VERSION=\"$VERSION\"|" \
 chmod +x "$OUT/install.sh"
 bash -n "$OUT/install.sh"
 
-( cd "$OUT" && shasum -a 256 install.sh "$KIT_TGZ" "$MOD_TGZ" > SHA256SUMS )
+( cd "$OUT" && shasum -a 256 install.sh "$KIT_TGZ" "$MOD_TGZ" ${LINUX_SOURCE_ARCHIVE:+"$LINUX_SOURCE_ARCHIVE"} > SHA256SUMS )
 echo "Release $VERSION in $OUT:"
 ls -la "$OUT"
 echo

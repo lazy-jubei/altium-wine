@@ -106,7 +106,6 @@ The release module archive includes `PATCHES` and `SHA256SUMS`, recording the
 hash of each distributed module. The release's top-level `SHA256SUMS` also
 covers the source archives.
 
-
 Patch `0023` combines the previously unpublished `0023`–`0028` sequence into its
 final implementation: parallel bitmap copies, immutable pan snapshots with
 pixel registration and coverage checks, modal input and tooltip fixes, and a
@@ -121,6 +120,16 @@ export lists every distributed module in `SHA256SUMS`. FreeType and Vulkan
 libraries remain supplied by the stock bundle. Native copies defer
 while the compositor preview is active. `AD17_NATIVE_GDI=0` and
 `AD17_SMOOTH_SCHEMATIC_PAN=0` disable the respective paths before launching.
+
+## Linux GDI+ modules
+
+The Linux kit's 64-bit and 32-bit `gdiplus.dll` builds use Wine 11.22,
+commit `9f8c4ae4d35c7ff4153267aba9618c026f5f5583`, with the shared
+`0031` and `0057` patches. Releases that ship the DLLs include the pristine
+`wine-linux-11.22-source.tar.gz` source snapshot and the patches in the kit.
+Run `bash build-patched-wine.sh` on Linux to reproduce the build. Pass its
+`build/wine-linux-output` directory to `make-release.sh --linux-gdiplus`
+to include the two DLLs with the matching sources.
 
 ## Optional DXMT module sources
 

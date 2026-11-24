@@ -40,6 +40,14 @@ LLVM_PACKAGE="llvm-mingw-$LLVM_TAG-ucrt-ubuntu-22.04-x86_64"
 LLVM_SHA256=e7a15a49a2ea95e9f3d8a9d0cfabe5052a4b10fb4777cc54de5a8c27b64bb701
 WINE_SOURCE_REV=9f8c4ae4d35c7ff4153267aba9618c026f5f5583
 RELEASES_URL=https://github.com/lazy-jubei/altium-wine/releases
+# Wine module, PE architecture, prefix directory, output filename.
+WINE_PATCH_MODULES=(
+    'winhttp x86_64 system32 winhttp.dll'
+    'd2d1 x86_64 system32 d2d1.dll'
+    'dwrite x86_64 system32 dwrite.dll'
+    'gdiplus x86_64 system32 gdiplus.dll'
+    'gdiplus i386 syswow64 gdiplus-i386.dll'
+)
 
 set_paths() {
     ROOT="$(realpath -m -- "${1:-${ALTIUM_WINE_ROOT:-$HOME/AltiumWineLinux}}")"
@@ -96,7 +104,9 @@ ensure_wine() {
 
 get_mingw() {
     local compiler="$ROOT/build/$LLVM_PACKAGE/bin/x86_64-w64-mingw32-clang"
-    if command -v x86_64-w64-mingw32-gcc; then return; fi
+    if [[ ${1:-} != wow64 ]] || command -v i686-w64-mingw32-gcc >/dev/null; then
+        if command -v x86_64-w64-mingw32-gcc; then return; fi
+    fi
     unpack_release "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_TAG/$LLVM_PACKAGE.tar.xz" \
         "$DOWNLOADS/$LLVM_PACKAGE.tar.xz" "$LLVM_SHA256" "$ROOT/build/$LLVM_PACKAGE" bin/x86_64-w64-mingw32-clang || return 1
     printf '%s\n' "$compiler"
@@ -129,12 +139,16 @@ patch_user32() (
 
 apply_built_modules() {
     [[ $WINE = "$ROOT/runners/$WINE_PACKAGE/bin/wine" ]] || return 0
-    local name module dll installed
-    for name in winhttp d2d1 dwrite; do
-        module="$ROOT/build/wine-linux-output/$name.dll"
+    local spec name arch system_dir artifact module dll installed
+    for spec in "${WINE_PATCH_MODULES[@]}"; do
+        read -r name arch system_dir artifact <<< "$spec"
+        module="$ROOT/build/wine-linux-output/$artifact"
+        if [[ ! -s $module && $name = gdiplus ]]; then
+            module="$KIT_DIR/modules/linux-gdiplus/$WINE_SOURCE_REV/$artifact"
+        fi
         [[ -s $module ]] || continue
-        dll="$ROOT/runners/$WINE_PACKAGE/lib/wine/x86_64-windows/$name.dll"
-        installed="$PREFIX/drive_c/windows/system32/$name.dll"
+        dll="$ROOT/runners/$WINE_PACKAGE/lib/wine/$arch-windows/$name.dll"
+        installed="$PREFIX/drive_c/windows/$system_dir/$name.dll"
         replace_file "$module" "$dll"
         if [[ -f $installed ]]; then replace_file "$module" "$installed"; fi
     done
@@ -142,25 +156,28 @@ apply_built_modules() {
 
 build_wine_modules() (
     if [[ ${1:-} == --help ]]; then
-        printf '%s\n' 'Build the shared WinHTTP, Direct2D and DirectWrite fixes for the pinned Linux Wine build.' \
+        printf '%s\n' 'Build the shared WinHTTP, Direct2D, DirectWrite and GDI+ fixes for the pinned Linux Wine build.' \
             'Requires Git, GCC, make, bison, flex and m4. The kit supplies MinGW if needed.'
         return
     fi
     [[ $# = 0 ]] || die 'On Linux, build-patched-wine.sh accepts --help or no options.'
-    local source="$ROOT/build/wine-linux-source" build="$ROOT/build/wine-linux-build"
-    local output="$ROOT/build/wine-linux-output" patch name index
+    local source="$ROOT/build/wine-linux-source" build="$ROOT/build/wine-linux-build-wow64"
+    local output="$ROOT/build/wine-linux-output" lock="$ROOT/build/wine-linux-build/.build.lock"
+    local patch spec name arch artifact index
     local tool compiler log targets=()
     local patches=(0004-winhttp-infinite-receive-timeout.patch
                    0003-d2d1-fast-redraw.patch 0037-d2d1-ordered-solid-batch.patch
-                   0038-d2d1-text-aa-scaled.patch 0042-dwrite-cache-scaled-glyphs.patch)
+                   0038-d2d1-text-aa-scaled.patch 0042-dwrite-cache-scaled-glyphs.patch
+                   0031-gdiplus-staging-sync.patch 0057-gdiplus-windows-cell-metrics.patch)
     for tool in git gcc make bison flex m4; do
         command -v "$tool" >/dev/null || die "Missing Wine build tool: $tool"
     done
-    compiler="$(get_mingw)" || exit 1
+    compiler="$(get_mingw wow64)" || exit 1
     PATH="$(dirname "$compiler"):$PATH"
     export PATH
-    mkdir -p "$build" "$output" "$LOGS"
-    exec 5>"$build/.build.lock"
+    # Older 64-bit-only builds use the same source and output directories.
+    mkdir -p "$build" "$output" "$LOGS" "$(dirname "$lock")"
+    exec 5>"$lock"
     flock 5
     log="$(mktemp --suffix=.log "$LOGS/build-wine.XXXXXX")"
     printf 'Building patched Wine modules (log %s)\n' "$log"
@@ -187,15 +204,17 @@ build_wine_modules() (
         ) || exit 1
         cd "$build" || exit 1
         if [[ ! -f Makefile ]]; then
-            "$source/configure" --enable-win64 --disable-tests --without-x --without-wayland \
+            "$source/configure" --enable-archs=i386,x86_64 --disable-tests --without-x --without-wayland \
                 --without-freetype --without-alsa --without-pulse || exit 1
         fi
-        for name in winhttp d2d1 dwrite; do
-            targets+=("dlls/$name/x86_64-windows/$name.dll")
+        for spec in "${WINE_PATCH_MODULES[@]}"; do
+            read -r name arch _ artifact <<< "$spec"
+            targets+=("dlls/$name/$arch-windows/$name.dll")
         done
         make -j "${ALTIUM_WINE_BUILD_JOBS:-$(nproc)}" "${targets[@]}" || exit 1
-        for name in winhttp d2d1 dwrite; do
-            replace_file "$build/dlls/$name/x86_64-windows/$name.dll" "$output/$name.dll"
+        for spec in "${WINE_PATCH_MODULES[@]}"; do
+            read -r name arch _ artifact <<< "$spec"
+            replace_file "$build/dlls/$name/$arch-windows/$name.dll" "$output/$artifact"
         done
     } >>"$log" 2>&1
     printf 'Built Wine modules in %s. Restart Designer to load them.\n' "$output"
