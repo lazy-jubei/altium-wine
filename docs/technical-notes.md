@@ -609,6 +609,20 @@ AD26_DXVK_DIR="$HOME/AltiumWine/build/ad26-dxvk/output"
 The launcher refuses to replace an open renderer and converts local document
 paths to Windows paths before passing them to Altium.
 
+### Exposed 3D copper with DXVK on Intel Macs
+
+On the tested Intel Mac with a Radeon RX 6900 XT, Metal returned signed normalized
+16-bit vertex values slightly below the exact magnitude. Two Altium 26.12.2
+vertex shaders scaled those values and truncated them to layer indices, which
+selected the previous layer for the solder-mask openings.
+
+Released macOS kits select the bundled DXVK on Intel Macs. It rounds the index
+in those two shaders when using AMD with MoltenVK. Explicit `AD26_DXVK_DIR`
+overrides still take priority. Set `DXVK_ALTIUM_SNORM_ROUND=0` for a comparison run.
+With the solder mask enabled, the breakout board rendered its exposed copper
+perimeter on both faces and the top mounting-hole rings. The 2D canvas still
+drew the routed traces.
+
 ### Transparent controls over Metal PCB views
 
 Patch `0050` composes transparent GDI children over the most recently completed

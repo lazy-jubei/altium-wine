@@ -105,6 +105,10 @@ ensure_volume() {  # create (first run) and mount the disk image that holds the 
 sha256_of() { shasum -a 256 "$1" | awk '{print $1}'; }
 
 # ---- platform checks -------------------------------------------------------
+is_intel_mac() {
+    [ "$(uname -m)" = x86_64 ] && [ "$(sysctl -in hw.optional.arm64)" != 1 ]
+}
+
 check_platform() {
     [ "$(uname -s)" = "Darwin" ] || die "This script is for macOS."
     local apple_silicon
@@ -339,12 +343,16 @@ apply_display_scale() {  # match the main display: 2x drawing on Retina, antiali
 }
 
 install_dxvk() {  # copy d3d11/d3d10core next to X2.EXE (extra.reg limits the native override to X2.EXE)
-    local ad="$1" f source
+    local ad="$1" f source bundled="$KIT_DIR/renderers/ad26-dxvk-intel"
     [ -f "$ad/X2.EXE" ] || return 0
     source="${AD26_DXVK_DIR:-}"
     if [ -z "$source" ]; then
-        ensure_dxvk
-        source="$DXVK_DIR"
+        if is_intel_mac && [ -d "$bundled" ]; then
+            source="$bundled"
+        else
+            ensure_dxvk
+            source="$DXVK_DIR"
+        fi
     fi
     for f in d3d11.dll d3d10core.dll; do
         [ -f "$source/$f" ] || die "Missing renderer DLL: $source/$f"
@@ -755,7 +763,12 @@ cmd_run() {
     case "$wine_exe" in
         X2.EXE|x2.exe)
             case "${AD26_RENDERER:-dxvk}" in
-                dxvk) install_dxvk "$(dirname "$exe")" ;;
+                dxvk)
+                    install_dxvk "$(dirname "$exe")"
+                    if is_intel_mac; then
+                        export DXVK_ALTIUM_SNORM_ROUND="${DXVK_ALTIUM_SNORM_ROUND:-1}"
+                    fi
+                    ;;
                 dxmt)
                     select_ad26_dxmt
                     relative_exe="${exe#"$PREFIX/drive_c/"}"

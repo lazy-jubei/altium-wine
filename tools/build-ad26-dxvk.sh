@@ -21,14 +21,20 @@ if [ ! -d "$BUILD_ROOT/dxvk" ]; then
     mkdir "$BUILD_ROOT/dxvk"
     tar -xzf "$archive" --strip-components 1 -C "$BUILD_ROOT/dxvk"
 fi
-patch_sha="$(shasum -a 256 "$KIT_DIR/patches/dxvk-ad26-gdi.patch" | awk '{print $1}')"
-stamp="$BUILD_ROOT/dxvk/.altium-gdi-patched"
-if [ -e "$stamp" ]; then
-    [ "$(cat "$stamp")" = "$patch_sha" ] || { echo 'Source patch changed; use a fresh AD26_DXVK_BUILD_ROOT.' >&2; exit 1; }
-else
-    patch -d "$BUILD_ROOT/dxvk" -p1 -N -t < "$KIT_DIR/patches/dxvk-ad26-gdi.patch"
-    printf '%s\n' "$patch_sha" > "$stamp"
-fi
+for feature in gdi amd-snorm-layer-index; do
+    patch_file="$KIT_DIR/patches/dxvk-ad26-$feature.patch"
+    patch_sha="$(shasum -a 256 "$patch_file" | awk '{print $1}')"
+    stamp="$BUILD_ROOT/dxvk/.altium-$feature-patched"
+    if [ -e "$stamp" ]; then
+        [ "$(cat "$stamp")" = "$patch_sha" ] || {
+            echo "Source patch $feature changed. Use a fresh AD26_DXVK_BUILD_ROOT." >&2
+            exit 1
+        }
+    else
+        patch -d "$BUILD_ROOT/dxvk" -p1 -N -t < "$patch_file"
+        printf '%s\n' "$patch_sha" > "$stamp"
+    fi
+done
 args=("$BUILD_ROOT/dxvk-build" "$BUILD_ROOT/dxvk" --cross-file "$BUILD_ROOT/dxvk/build-win64.txt"
     --buildtype release -Dstrip=true -Denable_d3d9=false -Denable_d3d10=true
     -Denable_d3d11=true -Denable_dxgi=false)

@@ -2,12 +2,13 @@
 # make-release.sh - package the kit for `curl | bash` installs. Writes files locally; uploading
 # them (e.g. as GitHub release assets) is a separate, manual step.
 #
-# Usage:  bash make-release.sh --version v1.0 --url BASE_URL --modules DIR [--out DIR]
+# Usage:  bash make-release.sh --version v1.0 --url BASE_URL --modules DIR [--ad26-dxvk DIR] [--out DIR]
 #
 #   --version  release name, used in the asset file names
 #   --url      where the assets will be downloadable, e.g.
 #              https://github.com/OWNER/altium-wine/releases/download/v1.0
 #   --modules  output of: bash build-patched-wine.sh --export DIR  (modules and SHA256SUMS)
+#   --ad26-dxvk output of: bash tools/build-ad26-dxvk.sh (default: ~/AltiumWine/build/ad26-dxvk/output)
 #   --out      output folder (default: ./dist/VERSION)
 #
 # Output: install.sh (stamped with the URL and checksums), altium-wine-kit-VERSION.tar.gz,
@@ -18,11 +19,13 @@ set -euo pipefail
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="" URL="" MODULES="" OUT=""
+AD26_DXVK="${AD26_DXVK_BUILD_ROOT:-${ALTIUM_WINE_ROOT:-$HOME/AltiumWine}/build/ad26-dxvk}/output"
 while [ $# -gt 0 ]; do
     case "$1" in
         --version) VERSION="$2"; shift 2 ;;
         --url)     URL="${2%/}"; shift 2 ;;
         --modules) MODULES="$2"; shift 2 ;;
+        --ad26-dxvk) AD26_DXVK="$2"; shift 2 ;;
         --out)     OUT="$2"; shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -37,6 +40,12 @@ for f in $MODULE_FILES; do
 done
 ( cd "$MODULES" && shasum -a 256 -c SHA256SUMS >/dev/null ) || { echo "Checksums in $MODULES don't match" >&2; exit 1; }
 
+for f in d3d11.dll d3d10core.dll SHA256SUMS licenses/DXVK.txt; do
+    [ -s "$AD26_DXVK/$f" ] || { echo "$AD26_DXVK/$f missing (run tools/build-ad26-dxvk.sh)" >&2; exit 1; }
+done
+( cd "$AD26_DXVK" && shasum -a 256 d3d11.dll d3d10core.dll | cmp -s - SHA256SUMS ) \
+    || { echo "DXVK checksums in $AD26_DXVK don't match" >&2; exit 1; }
+
 mkdir -p "$OUT"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
@@ -45,10 +54,15 @@ trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/kit"
 ( cd "$KIT_DIR" && tar -cf - --exclude ./logs --exclude ./dist --exclude ./config.local.sh \
     --exclude ./.git --exclude ./.github --exclude ./__pycache__ \
+    --exclude ./renderers/ad26-dxvk-intel \
     --exclude '.DS_Store' --exclude '*.bak' --exclude '*.pyc' --exclude '*.out' \
     --exclude './tools/VaultDpiFix/bin' --exclude './tools/VaultDpiFix/obj' \
     --exclude './diagnostics/VaultCodecCheck/bin' --exclude './diagnostics/VaultCodecCheck/obj' . ) | tar -xf - -C "$STAGE/kit"
 mkdir -p "$STAGE/kit/logs"
+DXVK_STAGE="$STAGE/kit/renderers/ad26-dxvk-intel"
+mkdir -p "$DXVK_STAGE/licenses"
+cp "$AD26_DXVK/d3d11.dll" "$AD26_DXVK/d3d10core.dll" "$AD26_DXVK/SHA256SUMS" "$DXVK_STAGE/"
+cp "$AD26_DXVK/licenses/DXVK.txt" "$DXVK_STAGE/licenses/"
 printf '%s\n' "$VERSION" > "$STAGE/kit/.release-version"
 KIT_TGZ="altium-wine-kit-$VERSION.tar.gz"
 COPYFILE_DISABLE=1 tar -czf "$OUT/$KIT_TGZ" -C "$STAGE" kit

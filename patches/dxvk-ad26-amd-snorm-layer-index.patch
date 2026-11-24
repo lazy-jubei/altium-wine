@@ -1,0 +1,67 @@
+From: Altium-on-Wine kit
+Subject: d3d11: round Altium SNORM layer indices on AMD MoltenVK
+
+Base: DXVK-macOS 8f1e28deed3ad30802f7e1bdff428ec14e6e7817
+
+--- a/src/d3d11/d3d11_shader.cpp
++++ b/src/d3d11/d3d11_shader.cpp
+@@ -40,9 +40,23 @@
+     if (module.programInfo().shaderStage() != pShaderKey->type() && !passthroughShader)
+       throw DxvkError("Mismatching shader type.");
+ 
++    DxbcModuleInfo moduleInfo = *pDxbcModuleInfo;
++    if (pShaderKey->type() == VK_SHADER_STAGE_VERTEX_BIT
++     && (name == "VS_82af00e7aba1f8a4087182287b11d36968537e62"
++      || name == "VS_0d90189f5220e916a56a5065169bc64fa80a4582")
++     && env::getEnvVar("DXVK_ALTIUM_SNORM_ROUND") == "1") {
++      const auto adapter = pDevice->GetDXVKDevice()->adapter();
++      const auto& properties = adapter->devicePropertiesExt();
++      moduleInfo.roundAltiumLayerIndex =
++          properties.core.properties.vendorID == uint32_t(DxvkGpuVendor::Amd)
++       && properties.khrDeviceDriverProperties.driverID == VK_DRIVER_ID_MOLTENVK;
++      if (moduleInfo.roundAltiumLayerIndex)
++        Logger::info(str::format("Rounding Altium SNORM layer indices in ", name));
++    }
++
+     m_shader = passthroughShader
+-      ? module.compilePassthroughShader(*pDxbcModuleInfo, name)
+-      : module.compile                 (*pDxbcModuleInfo, name);
++      ? module.compilePassthroughShader(moduleInfo, name)
++      : module.compile                 (moduleInfo, name);
+     m_shader->setShaderKey(*pShaderKey);
+     
+     if (dumpPath.size() != 0) {
+--- a/src/dxbc/dxbc_compiler.cpp
++++ b/src/dxbc/dxbc_compiler.cpp
+@@ -1768,10 +1768,16 @@
+           typeId, src.at(0).id);
+         break;
+       
+-      case DxbcOpcode::FtoU:
+-        dst.id = m_module.opConvertFtoU(
+-          typeId, src.at(0).id);
+-        break;
++      case DxbcOpcode::FtoU: {
++        uint32_t value = src.at(0).id;
++
++        // The two known Altium shaders each convert one decoded SNORM layer index.
++        // Some AMD Metal vertex inputs round just below that encoded integer.
++        if (m_moduleInfo.roundAltiumLayerIndex)
++          value = m_module.opRoundEven(getVectorTypeId(src.at(0).type), value);
++
++        dst.id = m_module.opConvertFtoU(typeId, value);
++      } break;
+       
+       default:
+         Logger::warn(str::format(
+--- a/src/dxbc/dxbc_modinfo.h
++++ b/src/dxbc/dxbc_modinfo.h
+@@ -54,6 +54,7 @@
+     DxbcOptions   options;
+     DxbcTessInfo* tess;
+     DxbcXfbInfo*  xfb;
++    bool          roundAltiumLayerIndex = false;
+   };
+ 
+ }
+\ No newline at end of file
