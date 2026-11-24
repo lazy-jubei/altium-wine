@@ -90,6 +90,8 @@ main() {
     [ -n "$root" ] || root="$HOME/AltiumWine"
     case "$root" in /*) ;; *) root="$PWD/$root" ;; esac
     root="${root%/}"
+    if [ -d "$root" ]; then root="$(cd "$root" && pwd -P)" || die "Can't resolve the install location."; fi
+    [ -n "$root" ] && [ "$root" != / ] || die "Choose an installation folder."
     if [ -n "$RELEASE_URL" ]; then
         kit="$root/kit"
     else
@@ -139,23 +141,27 @@ main() {
         xcode-select -p >/dev/null 2>&1 || die "Building Wine needs the Xcode Command Line Tools. Run: xcode-select --install"
     fi
 
-    if [ "$UI" = app ]; then
-        ui_message "This installs Altium Designer on your Mac.
-
-You only need to do two things:
-1. Choose the Altium installer you downloaded from your Altium account.
-2. Follow the sign-in instructions for your installer.
-
-Everything else runs on its own. You need your own Altium license." 'Start' 'Welcome'
-    fi
-
     # ---- the Altium installer -------------------------------------------------
-    local x2 have_altium=0
-    x2="$(find_altium_exe "$(prefix_dir "$root")")"
+    local prefix x2 have_altium=0 installed=0 has_prefix=0 clean=0
+    prefix="$(prefix_dir "$root")" || die "Couldn't mount the Altium disk image."
+    x2="$(find_altium_exe "$prefix")"
     [ -n "$x2" ] && have_altium=1
+    if [ $have_altium = 1 ] || [ -f "$prefix/.altium-kit-setup" ]; then installed=1; fi
+    if [ -d "$prefix/drive_c" ] || [ -d "$root/altium-wine.sparsebundle" ]; then has_prefix=1; fi
+    if [ "$UI" = app ]; then
+        local choice installed_version=""
+        if [ $installed = 1 ]; then installed_version="$(installed_kit_version "$root")"; fi
+        ui_emit welcome "$installed" "$has_prefix" "$installed_version" "$KIT_VERSION"
+        choice="$(ui_read)" || exit $?
+        case "$choice" in
+            update) [ $installed = 1 ] || die "No existing installation was found." ;;
+            clean) clean=1; have_altium=0; x2="" ;;
+            *) die "Unknown setup choice." ;;
+        esac
+    fi
     if [ $have_altium = 1 ] && [ $reinstall_altium = 0 ]; then
         skip_altium=1
-        say "Altium is already installed in $root/prefix; keeping it."
+        say "Keeping the existing Altium installation in $prefix."
     fi
     if [ "$UI" = app ] && [ $skip_altium = 0 ] && [ -z "$altium_src" ]; then
         altium_src="$(ui_choose_installer "$(find_altium_installer)")" || exit $?
@@ -217,7 +223,6 @@ Everything else runs on its own. You need your own Altium license." 'Start' 'Wel
 
     # ---- kit + modules ------------------------------------------------------------
     ui_stage wine "downloading Wine"
-    WINE_STARTED=1
     local dl="$root/downloads" modules=""
     mkdir -p "$dl"
     if [ -n "$RELEASE_URL" ]; then
@@ -225,6 +230,39 @@ Everything else runs on its own. You need your own Altium license." 'Start' 'Wel
         rm -rf "$root/kit.new"; mkdir -p "$root/kit.new"
         tar -xzf "$dl/altium-wine-kit-$KIT_VERSION.tar.gz" -C "$root/kit.new" --strip-components 1 || die "Kit extract failed."
         [ -f "$root/kit.new/altium-wine.sh" ] || die "Kit archive has no altium-wine.sh"
+        if [ $from_source = 0 ]; then
+            fetch "$RELEASE_URL/altium-wine-modules-$KIT_VERSION.tar.gz" "$dl/altium-wine-modules-$KIT_VERSION.tar.gz" "$MODULES_SHA256"
+            modules="$dl/modules-$KIT_VERSION"
+            rm -rf "$modules"; mkdir -p "$modules"
+            tar -xzf "$dl/altium-wine-modules-$KIT_VERSION.tar.gz" -C "$modules" --strip-components 1 || die "Modules extract failed."
+            ( cd "$modules" && shasum -a 256 -c SHA256SUMS >/dev/null ) || die "Module checksums don't match."
+        fi
+    fi
+
+    # Check the installer before making any changes to the existing prefix.
+    local inst="" setup_dir="$altium_src" unpacked=0
+    if [ $skip_altium = 0 ]; then
+        case "$altium_src" in
+            *.zip|*.ZIP)
+                setup_dir="$dl/altium-offline-setup"
+                ui_stage altium "unpacking the Altium installer"
+                say "Unpacking $(basename "$altium_src") (several GB, takes a few minutes)"
+                rm -rf "$setup_dir"; mkdir -p "$setup_dir"
+                ditto -x -k "$altium_src" "$setup_dir" || die "Couldn't unzip $altium_src"
+                unpacked=1
+                ;;
+        esac
+        inst="$(find_altium_setup_exe "$setup_dir")"
+        [ -n "$inst" ] || die "No Altium installer in $setup_dir"
+        if [ $clean = 1 ]; then
+            case "$(cd "$(dirname "$inst")" && pwd -P)/" in
+                "$prefix/"*) die "Move the Altium installer outside the container before running Clean Install." ;;
+            esac
+        fi
+    fi
+
+    close_container "$prefix"
+    if [ -n "$RELEASE_URL" ]; then
         if [ -d "$kit" ]; then  # update: keep logs and local settings
             if [ -d "$kit/logs" ]; then
                 rmdir "$root/kit.new/logs" 2>/dev/null || true
@@ -235,14 +273,6 @@ Everything else runs on its own. You need your own Altium license." 'Start' 'Wel
         fi
         mv "$root/kit.new" "$kit" || die "Couldn't move the kit into place."
         say "Kit $KIT_VERSION in $kit"
-
-        if [ $from_source = 0 ]; then
-            fetch "$RELEASE_URL/altium-wine-modules-$KIT_VERSION.tar.gz" "$dl/altium-wine-modules-$KIT_VERSION.tar.gz" "$MODULES_SHA256"
-            modules="$dl/modules-$KIT_VERSION"
-            rm -rf "$modules"; mkdir -p "$modules"
-            tar -xzf "$dl/altium-wine-modules-$KIT_VERSION.tar.gz" -C "$modules" --strip-components 1 || die "Modules extract failed."
-            ( cd "$modules" && shasum -a 256 -c SHA256SUMS >/dev/null ) || die "Module checksums don't match."
-        fi
     fi
     if [ "$root" != "$HOME/AltiumWine" ]; then
         # Preserve user settings on upgrades, including the selected renderer.
@@ -257,7 +287,12 @@ Everything else runs on its own. You need your own Altium license." 'Start' 'Wel
     # ---- Wine + prefix --------------------------------------------------------------
     ui_stage wine "setting up Wine"
     say "Setting up Wine and the prefix"
-    PATCHED_MODULES_DIR="$modules" bash "$aw" setup < "$TTY_IN" || die "Setup failed; see $kit/logs/LATEST-summary.txt"
+    if [ $clean = 1 ]; then
+        erase_prefix "$root" "$prefix"
+    fi
+    WINE_STARTED=1
+    ALTIUM_WINE_FORCE_DISK_IMAGE="$clean" PATCHED_MODULES_DIR="$modules" bash "$aw" setup < "$TTY_IN" ||
+        die "Setup failed; see $kit/logs/LATEST-summary.txt"
     # An existing patched Wine is refreshed when this release's modules differ from it.
     if [ -n "$modules" ] && ! patched_matches "$root/wine-patched/PATCHES" "$modules/SHA256SUMS"; then
         say "Updating the patched Wine"
@@ -268,20 +303,7 @@ Everything else runs on its own. You need your own Altium license." 'Start' 'Wel
 
     # ---- Altium -------------------------------------------------------------------------
     if [ $skip_altium = 0 ]; then
-        local setup_dir="$altium_src" unpacked=0
-        case "$altium_src" in
-            *.zip|*.ZIP)
-                setup_dir="$dl/altium-offline-setup"
-                ui_stage altium "unpacking the Altium installer"
-                say "Unpacking $(basename "$altium_src") (several GB, takes a few minutes)"
-                rm -rf "$setup_dir"; mkdir -p "$setup_dir"
-                ditto -x -k "$altium_src" "$setup_dir" || die "Couldn't unzip $altium_src"
-                unpacked=1
-                ;;
-        esac
-        local inst signin_tips
-        inst="$(find_altium_setup_exe "$setup_dir")"
-        [ -n "$inst" ] || die "No Altium installer in $setup_dir"
+        local signin_tips
         case "$(printf '%s' "${inst##*/}" | tr '[:upper:]' '[:lower:]')" in
             altiumdesignersetup*.exe)
                 signin_tips="Leave Unified Sign In enabled and continue in your Mac's default browser."
@@ -328,12 +350,16 @@ If the installer stops responding, a dialog may be hidden behind it. Mission Con
             # Started apart from the window, so closing the window leaves Altium running.
             ui_stage finish "opening Altium"
             # Altium may already be open (from the Altium installer's last page).
-            if ! pgrep -f 'X2\.EXE|DXP\.EXE' >/dev/null 2>&1; then
+            if ! altium_open_in_prefix "$(prefix_dir "$root")"; then
                 nohup bash "$aw" run < /dev/null > /dev/null 2>&1 &
             fi
-            ui_emit finished "Altium is opening. Sign in through the browser when it asks, then quit Altium and open it again. Your sign-in shows up after that restart.
+            if [ "$skip_altium" = 1 ]; then
+                ui_emit finished "Update complete. Altium is opening."
+            else
+                ui_emit finished "Altium is opening. Sign in through the browser when it asks, then quit Altium and open it again. Your sign-in shows up after that restart.
 
 Next time, open Altium Designer (Wine) from Applications."
+            fi
         else
             ui_emit finished "Wine is ready. Run setup again with your Altium installer."
         fi
@@ -426,7 +452,8 @@ ui_exit() {  # EXIT trap in the window: stop the Wine setup started, and report 
 stop_wine() {
     [ "$WINE_STARTED" = 1 ] || return 0
     local ws prefix
-    prefix="$(prefix_dir "${ALTIUM_WINE_ROOT:-$HOME/AltiumWine}")"
+    prefix="$(prefix_dir "${ALTIUM_WINE_ROOT:-$HOME/AltiumWine}")" || return 0
+    altium_open_in_prefix "$prefix" && return 0
     for ws in "${ALTIUM_WINE_ROOT:-$HOME/AltiumWine}"/wine-patched/Wine*.app/Contents/Resources/wine/bin/wineserver \
               "${ALTIUM_WINE_ROOT:-$HOME/AltiumWine}"/wine/Wine*.app/Contents/Resources/wine/bin/wineserver; do
         [ -x "$ws" ] && WINEPREFIX="$prefix" "$ws" -k 2>/dev/null
@@ -438,10 +465,88 @@ prefix_dir() {  # prefix_dir ROOT: the Wine prefix, in the kit's disk image (mou
     local root="$1" image="$1/altium-wine.sparsebundle" volume="$1/volume"
     if [ -d "$root/prefix/drive_c" ] && [ ! -d "$image" ]; then echo "$root/prefix"; return 0; fi
     if [ -d "$image" ] && ! mount | grep -qF " on $volume ("; then
-        mkdir -p "$volume"
-        hdiutil attach -quiet "$image" -mountpoint "$volume" -nobrowse -noverify -noautofsck -owners on >/dev/null 2>&1 || true
+        mkdir -p "$volume" &&
+            hdiutil attach -quiet "$image" -mountpoint "$volume" -nobrowse -noverify -noautofsck -owners on >&2 || return 1
     fi
     echo "$volume/prefix"
+}
+
+prefix_server() {
+    [ -d "$1" ] && lsof -a -u "$UID" -c wineserver -t "$1" 2>/dev/null
+}
+
+server_wine() {
+    local server
+    server="$(lsof -a -p "$1" -d txt -Fn 2>/dev/null | sed -n 's/^n\(.*\/wineserver\)$/\1/p' | head -n 1)"
+    [ -n "$server" ] && [ -x "${server%/*}/wine" ] || return 1
+    printf '%s\n' "${server%/*}/wine"
+}
+
+container_tasks() {
+    WINEPREFIX="$1" WINEDEBUG=-all "$2" tasklist /fo csv /nh < /dev/null
+}
+
+altium_pids() {
+    awk -F '"' 'tolower($2) ~ /^(x2|dxp)\.exe$/ && $4 ~ /^[0-9]+$/ {print $4}'
+}
+
+altium_open_in_prefix() {
+    local server wine tasks
+    server="$(prefix_server "$1")" || return 1
+    # If Wine is running and can't be queried, avoid launching a second Altium.
+    wine="$(server_wine "$server")" && tasks="$(container_tasks "$1" "$wine")" || return 0
+    [ -n "$(printf '%s\n' "$tasks" | altium_pids)" ]
+}
+
+close_container() {
+    local prefix="$1" server wine tasks pids pid deadline announced=0 requested=""
+    server="$(prefix_server "$prefix")" || return 0
+    wine="$(server_wine "$server")" || die "Can't identify the Wine runtime for $prefix. Close it and try again."
+    deadline=$((SECONDS + 90))
+    while :; do
+        prefix_server "$prefix" >/dev/null || return 0
+        if ! tasks="$(container_tasks "$prefix" "$wine")"; then
+            prefix_server "$prefix" >/dev/null || return 0
+            die "Can't check Altium in $prefix. Close it and try again."
+        fi
+        if printf '%s\n' "$tasks" | grep -qiE '^"(installer|altiumdesigner[^"]*setup[^"]*)\.exe",'; then
+            die "The Altium installer is already running in this container. Close it and try again."
+        fi
+        pids="$(printf '%s\n' "$tasks" | altium_pids)"
+        [ -n "$pids" ] || break
+        if [ $announced = 0 ]; then
+            say "Closing Altium in $prefix. Save any open work when prompted."
+            ui_wait 'Closing Altium' 'Save any open work in Altium to continue.' 'Waiting for Altium to close.'
+            announced=1
+        fi
+        # A process can be listed before it creates a window. Retry until WM_CLOSE is sent,
+        # then leave its save dialog alone while waiting for that process to exit.
+        for pid in $pids; do
+            case " $requested " in *" $pid "*) continue ;; esac
+            if WINEPREFIX="$prefix" WINEDEBUG=-all "$wine" taskkill /pid "$pid" < /dev/null >/dev/null 2>&1; then
+                requested="$requested $pid"
+            fi
+        done
+        [ "$SECONDS" -lt "$deadline" ] || die "Altium is still open. Close it and try again."
+        sleep 1
+    done
+    WINEPREFIX="$prefix" "${wine%/*}/wineserver" -k 2>/dev/null || true
+    deadline=$((SECONDS + 15))
+    while prefix_server "$prefix" >/dev/null; do
+        [ "$SECONDS" -lt "$deadline" ] || die "Wine is still running in $prefix. Close it and try again."
+        sleep 1
+    done
+}
+
+erase_prefix() {
+    local root="$1" prefix="$2" image="$1/altium-wine.sparsebundle"
+    if prefix_server "$prefix" >/dev/null; then die "Wine reopened in $prefix. Close it and try again."; fi
+    if [ -d "$image" ]; then
+        hdiutil detach -quiet "$root/volume" || die "Couldn't unmount the Altium disk image."
+        rm -rf -- "$image" || die "Couldn't remove the old Altium disk image."
+    elif [ "$prefix" = "$root/prefix" ] && [ -d "$prefix/drive_c" ]; then
+        rm -rf -- "$prefix" || die "Couldn't remove the old Altium prefix."
+    fi
 }
 
 window_possible() {  # a desktop session, and this script is a file the window can run again
@@ -452,7 +557,7 @@ window_possible() {  # a desktop session, and this script is a file the window c
 }
 
 open_window() {  # open_window ROOT HERE [ARGS...]: build the setup window and open it
-    local root="$1" here="$2" src app bin log script arg
+    local root="$1" here="$2" src app bin log script arg source_hash
     shift 2
     mkdir -p "$root/tools" "$root/downloads"
     app="$root/tools/Altium Designer Installer.app"
@@ -469,7 +574,8 @@ open_window() {  # open_window ROOT HERE [ARGS...]: build the setup window and o
         src="$here/tools/AltiumInstaller.swift"
     fi
     [ -f "$src" ] || return 1
-    if [ ! -x "$bin" ] || [ "$src" -nt "$bin" ]; then
+    source_hash="$(shasum -a 256 "$src" | awk '{print $1}')"
+    if [ ! -x "$bin" ] || [ "$(cat "$app/Contents/SourceSHA256" 2>/dev/null)" != "$source_hash" ]; then
         say "Preparing the setup window"
         rm -rf "$app"; mkdir -p "$app/Contents/MacOS"
         cat > "$app/Contents/Info.plist" <<'PLIST'
@@ -490,6 +596,7 @@ PLIST
             warn "The setup window couldn't be built (see $log); using Terminal instead."
             return 1
         fi
+        printf '%s\n' "$source_hash" > "$app/Contents/SourceSHA256"
         codesign --force --sign - "$app" >/dev/null 2>&1 || true
     fi
     # A release's install.sh is copied next to its downloads, so the window doesn't depend on
@@ -503,6 +610,8 @@ PLIST
     local open_args
     open_args=(--script "$script" --root "$root")
     for arg in "$@"; do open_args+=(--arg "$arg"); done
+    # LaunchServices doesn't preserve the Terminal's working directory for relative --root paths.
+    open_args+=(--arg --root --arg "$root")
     open "$app" --args "${open_args[@]}"
 }
 
@@ -515,6 +624,44 @@ ask_yes() {
     printf '%s [y/N] ' "$1"
     read -r reply < "$TTY_IN" || return 1
     case "$reply" in y|Y|yes|YES|Yes) return 0 ;; *) return 1 ;; esac
+}
+
+installed_kit_version() {
+    local root="$1" version archive members matched=""
+    version="$(cat "$root/kit/.release-version" 2>/dev/null)"
+    case "$version" in
+        ""|*[!A-Za-z0-9._-]*) ;;
+        *) printf '%s\n' "$version"; return 0 ;;
+    esac
+
+    # Older releases didn't leave a version marker. Match the installed kit's
+    # contents against cached archives instead of using the last download's name.
+    [ -f "$root/kit/install.sh" ] || return 0
+    for archive in "$root"/downloads/altium-wine-kit-*.tar.gz; do
+        [ -f "$archive" ] || continue
+        version="${archive##*/altium-wine-kit-}"
+        version="${version%.tar.gz}"
+        case "$version" in ""|*[!A-Za-z0-9._-]*) continue ;; esac
+        members="$(tar -tf "$archive" 2>/dev/null)" || continue
+        printf '%s\n' "$members" | grep -qxF 'kit/install.sh' || continue
+        if cmp -s <(tar -xOf "$archive" 2>/dev/null) <(printf '%s\n' "$members" | installed_kit_contents "$root"); then
+            [ -z "$matched" ] || return 0
+            matched="$version"
+        fi
+    done
+    printf '%s\n' "$matched"
+}
+
+installed_kit_contents() {
+    local member
+    while IFS= read -r member; do
+        case "$member" in
+            */../*|*/..) return 1 ;;
+            */) ;;
+            kit/*) cat "$1/$member" || return 1 ;;
+            *) return 1 ;;
+        esac
+    done
 }
 
 fetch() {  # fetch URL FILE SHA256 - download (reusing a verified copy) and verify
@@ -559,8 +706,9 @@ find_altium_installer() {  # prefer the existing offline installer discovery, th
 
 find_altium_exe() {  # find_altium_exe PREFIX: X2.EXE (Altium 18+) or DXP.EXE (17 and older)
     local c="$1/drive_c" exe
-    exe="$(find "$c/Program Files/Altium" -maxdepth 2 -iname 'X2.EXE' 2>/dev/null | head -n 1)"
-    [ -n "$exe" ] || exe="$(find "$c/Program Files (x86)/Altium" -maxdepth 2 -iname 'DXP.EXE' 2>/dev/null | head -n 1)"
+    exe="$(find "$c/Program Files/Altium" -maxdepth 2 -type f -iname 'X2.EXE' 2>/dev/null | head -n 1)"
+    [ -n "$exe" ] || exe="$(find "$c/Program Files (x86)/Altium" "$c/Program Files/Altium" -maxdepth 2 \
+        -type f -iname 'DXP.EXE' 2>/dev/null | head -n 1)"
     echo "$exe"
 }
 

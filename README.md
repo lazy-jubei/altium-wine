@@ -60,7 +60,7 @@ Optimizations include:
 
 For faster AD17 3D panning, disable **Use Ordered Blending in 3D** in **Preferences → PCB Editor → Display**. [Tuning details](docs/technical-notes.md).
 
-Wine and Altium live in `~/AltiumWine`. Re-run `install.sh` to update.
+Wine and Altium live in `~/AltiumWine`. Re-run `install.sh` and choose **Update**.
 
 [Setup and sign-in guide](docs/setup.md) · [Patch details and troubleshooting](docs/technical-notes.md)
 

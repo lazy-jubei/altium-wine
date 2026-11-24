@@ -51,6 +51,7 @@ WORK_ROOT="${ALTIUM_WINE_ROOT:-$HOME/AltiumWine}"
 # shellcheck source=config.sh
 [ -f "$KIT_DIR/config.sh" ] && . "$KIT_DIR/config.sh"
 [ -f "$KIT_DIR/config.local.sh" ] && . "$KIT_DIR/config.local.sh"
+WORK_ROOT="${ALTIUM_WINE_ROOT:-$WORK_ROOT}"
 
 WINE_ROOT="$WORK_ROOT/wine"
 PATCHED_ROOT="${PATCHED_ROOT_OVERRIDE:-$WORK_ROOT/wine-patched}"

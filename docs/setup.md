@@ -31,7 +31,9 @@ A setup window walks you through it (`--terminal` asks in Terminal instead). The
 - `--yes`
 - `--uninstall`
 
-Re-running `install.sh` updates the kit and patched Wine and keeps Altium and your projects.
+Re-run `install.sh` and choose **Update** to keep Altium, its settings, and your projects.
+**Clean Install** erases the existing Wine container, including any projects stored inside it.
+Setup closes Altium in that container first and waits for you to answer any save prompts.
 
 From the repository root, which compiles the patched Wine locally:
 

@@ -49,6 +49,7 @@ mkdir -p "$STAGE/kit"
     --exclude './tools/VaultDpiFix/bin' --exclude './tools/VaultDpiFix/obj' \
     --exclude './diagnostics/VaultCodecCheck/bin' --exclude './diagnostics/VaultCodecCheck/obj' . ) | tar -xf - -C "$STAGE/kit"
 mkdir -p "$STAGE/kit/logs"
+printf '%s\n' "$VERSION" > "$STAGE/kit/.release-version"
 KIT_TGZ="altium-wine-kit-$VERSION.tar.gz"
 COPYFILE_DISABLE=1 tar -czf "$OUT/$KIT_TGZ" -C "$STAGE" kit
 

@@ -59,6 +59,7 @@ enum Step: Int, CaseIterable, Identifiable {
 
 enum Page: Equatable {
     case working
+    case welcome(installed: Bool, hasPrefix: Bool, current: String, target: String)
     case message(title: String, text: String, button: String)
     // The script is watching for something to happen; no answer is needed.
     case waiting(title: String, text: String)
@@ -104,6 +105,7 @@ final class Installer: ObservableObject {
     var failed: Bool { if case .failed = page { return true } else { return false } }
     var busy: Bool {
         guard running else { return false }
+        if case .welcome = page { return false }
         if case .message = page { return false }
         if case .choose = page { return false }
         return true
@@ -212,11 +214,14 @@ final class Installer: ObservableObject {
         func at(_ index: Int) -> String { index < fields.count ? fields[index] : "" }
         switch at(0) {
         case "stage":
+            page = .working
             if let next = Step(key: at(1)) { step = next }
             stage = at(2)
             status = ""
         case "notify":
             status = at(1)
+        case "welcome":
+            page = .welcome(installed: at(1) == "1", hasPrefix: at(2) == "1", current: at(3), target: at(4))
         case "message":
             page = .message(title: at(2), text: at(3), button: at(1))
         case "wait":
@@ -457,6 +462,17 @@ struct PageView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             switch installer.page {
+            case let .welcome(installed, _, current, target):
+                heading("Welcome")
+                let build = target == "dev" ? "the development build" : target
+                if installed {
+                    paragraph(current.isEmpty
+                              ? "An existing Altium Wine installation was found. Its kit version is unknown."
+                              : "Altium Wine \(current) is installed.")
+                    paragraph("Update to \(build) and keep Altium, your settings, and your projects.")
+                } else {
+                    paragraph("Set up Altium with \(build). You'll need the installer from your Altium account.")
+                }
             case .working:
                 heading(installer.step.title)
                 paragraph(installer.step.explanation)
@@ -587,6 +603,7 @@ struct TerminalPane: View {
 
 struct BottomBar: View {
     @ObservedObject var installer: Installer
+    @State private var confirmCleanInstall = false
 
     var body: some View {
         HStack {
@@ -595,6 +612,13 @@ struct BottomBar: View {
             switch installer.page {
             case .working, .waiting, .finished:
                 EmptyView()
+            case let .welcome(installed, hasPrefix, _, _):
+                if installed {
+                    Button("Clean Install") { cleanInstall(hasPrefix: hasPrefix) }
+                    primary("Update") { installer.reply("update") }
+                } else {
+                    primary("Clean Install") { cleanInstall(hasPrefix: hasPrefix) }
+                }
             case let .message(_, _, button):
                 primary(button) { installer.reply("ok") }
             case .choose:
@@ -607,11 +631,26 @@ struct BottomBar: View {
             }
         }
         .controlSize(.large)
+        .alert("Erase the existing Altium container?", isPresented: $confirmCleanInstall) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clean Install", role: .destructive) { installer.reply("clean") }
+        } message: {
+            Text("This permanently removes Altium, its settings, and any projects stored inside this container.")
+        }
+    }
+
+    private func cleanInstall(hasPrefix: Bool) {
+        if hasPrefix {
+            confirmCleanInstall = true
+        } else {
+            installer.reply("clean")
+        }
     }
 
     private func primary(_ title: String, action: @escaping () -> Void) -> some View {
         Button(title, action: action)
             .buttonStyle(.borderedProminent)
+            .tint(.blue)
             .keyboardShortcut(.defaultAction)
     }
 }

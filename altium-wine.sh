@@ -50,13 +50,14 @@ DWM_COMPOSITION_OFF=0
 [ -f "$KIT_DIR/config.sh" ] && . "$KIT_DIR/config.sh"
 # Machine-specific settings (written by install.sh, kept across kit updates).
 [ -f "$KIT_DIR/config.local.sh" ] && . "$KIT_DIR/config.local.sh"
+WORK_ROOT="${ALTIUM_WINE_ROOT:-$WORK_ROOT}"
 
 # The prefix lives in its own case-insensitive disk image (like a Windows drive), so Altium
 # behaves the same whatever the Mac's drive is formatted as. The sparse image only takes
 # the space it uses. An install from before the image keeps its prefix where it is.
 IMAGE="$WORK_ROOT/altium-wine.sparsebundle"
 VOLUME="$WORK_ROOT/volume"
-if [ -d "$WORK_ROOT/prefix/drive_c" ] && [ ! -d "$IMAGE" ]; then
+if [ "${ALTIUM_WINE_FORCE_DISK_IMAGE:-0}" != 1 ] && [ -d "$WORK_ROOT/prefix/drive_c" ] && [ ! -d "$IMAGE" ]; then
     PREFIX="$WORK_ROOT/prefix"
 else
     PREFIX="$VOLUME/prefix"
@@ -249,12 +250,14 @@ ensure_patched_wine() {  # build (or fetch) the patched bundle if USE_PATCHED_WI
         || die "build-patched-wine.sh failed; see logs/LATEST-summary.txt"
 }
 
-# Altium (or its installer) running from this prefix? Only our own bundles' processes count,
-# so a CrossOver bottle or another prefix doesn't block anything.
-altium_running() {
-    pgrep -f "$WORK_ROOT/wine" >/dev/null 2>&1 || return 1
-    pgrep -f 'X2\.EXE|DXP\.EXE|Installer\.Exe|AltiumDesigner[0-9]*Setup' >/dev/null 2>&1
-}
+# Only processes in this prefix count. A Wine server keeps the prefix directory open.
+altium_running() (
+    lsof -a -u "$UID" -c wineserver -t "$PREFIX" >/dev/null 2>&1 || return 1
+    local tasks
+    # Keep setup from replacing a running runtime if it can't be queried.
+    select_wine && tasks="$(WINEPREFIX="$PREFIX" WINEDEBUG=-all "$WINE" tasklist /fo csv /nh < /dev/null)" || return 0
+    printf '%s\n' "$tasks" | grep -qiE '^"(x2|dxp|installer|altiumdesigner[^"]*setup[^"]*)\.exe",'
+)
 
 # ---- prefix ----------------------------------------------------------------
 write_base_reg() {
@@ -360,6 +363,7 @@ install_dxvk() {  # copy d3d11/d3d10core next to X2.EXE (extra.reg limits the na
 
 cmd_setup() {
     check_platform
+    altium_running && die "Altium (or its installer) is running in this prefix. Close it, then run setup again."
     local force=""
     [ "${1:-}" = "--force-wine" ] && force="force"
     ensure_wine "$force"
@@ -380,7 +384,6 @@ cmd_setup() {
         # Background services (e.g. Microsoft Edge's updater, installed with WebView2) keep the
         # prefix busy forever, so wineserver -w below would never return. Stop them first,
         # but never underneath a running Altium or installer.
-        altium_running && die "Altium (or its installer) is running in this prefix. Close it, then run setup again."
         "$WINESERVER" -k 2>/dev/null; sleep 2
         say "Prefix exists; refreshing it for this Wine version"
         "$WINE" wineboot -u >> "$log" 2>&1
