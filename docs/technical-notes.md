@@ -18,7 +18,7 @@ bash make-release.sh --version v1.1.2 \
 - `altium-wine-modules-v1.1.1.tar.gz`;
 - `SHA256SUMS`.
 
-Uploading those files to the URL is a separate step. Include the source archives described in [docs/wine-sources.md](wine-sources.md), and add their hashes to `SHA256SUMS`. Then `curl -fsSL <url>/install.sh | bash` works.
+Upload the generated files and the source archives described in [docs/wine-sources.md](wine-sources.md). Add the source archive hashes to `SHA256SUMS`. Users can then download and open setup with `curl -fsSL <url>/install.sh -o install.sh && bash install.sh`.
 
 To test before uploading, serve `dist/` locally and point a throwaway `--root` at it:
 

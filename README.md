@@ -15,34 +15,33 @@ build.
 
 *[LimeSDR-USB](docs/screenshots/README.md) by [Lime Microsystems / Myriad-RF](https://github.com/myriadrf/LimeSDR-USB).*
 
-## Install on Linux
+## Install
 
-Download the release installer and run it with your Altium online setup
-executable, offline setup ZIP, or extracted setup folder. See the Linux guide
-for build prerequisites, Altium 365 sign-in, and renderer settings.
-[Linux setup guide](docs/linux.md)
-
-```bash
-curl -fsSL https://github.com/lazy-jubei/altium-wine/releases/latest/download/install.sh -o install.sh
-bash install.sh --build-from-source --altium-installer /path/to/offline-setup.zip
-```
-
-Open **Altium Designer (Wine)** from your application menu.
-
-To update an existing Linux installation, download the latest `install.sh`
-and run `bash install.sh --update`. The installed kit also provides
-`altium-wine.sh update` and `altium-wine.sh update --check`.
-
-## Install on macOS
-
-Get the Altium online or offline installer from your Altium account, then download and run the [kit installer](https://github.com/lazy-jubei/altium-wine/releases/latest) from the latest release:
+Get the online setup executable, offline ZIP, or extracted offline setup folder
+from your Altium account. Run the same command on macOS or Linux to download and
+open the setup window.
 
 ```bash
-curl -fL https://github.com/lazy-jubei/altium-wine/releases/latest/download/install.sh -o install.sh
-bash install.sh
+curl -fsSL https://github.com/lazy-jubei/altium-wine/releases/latest/download/install.sh -o install.sh && bash install.sh
 ```
 
-A setup window walks you through choosing the installer and signing in. Online setup opens your Mac's default browser with **Unified Sign In** enabled. You can also pass an offline setup folder or ZIP. The window has a Terminal pane with the details. It's built on your Mac from `tools/AltiumInstaller.swift` with Apple's Command Line Tools. Without the Command Line Tools, or with `--terminal`, the installer asks in Terminal instead.
+The installer detects the operating system and opens a graphical setup window
+by default in a desktop session. Use `bash install.sh --terminal` for
+command-line setup.
+
+### Linux
+
+The installer installs GTK4 and PyGObject as needed on supported distributions.
+Open **Altium Designer (Wine)** from your application menu when setup finishes.
+For an existing installation, rerun the command above and choose **Update**.
+The installed kit also supports `altium-wine.sh update` and
+`altium-wine.sh update --check`. [Linux setup guide](docs/linux.md)
+
+### macOS
+
+The setup window is built on your Mac with Apple’s Command Line Tools. The
+installer uses Terminal if those tools are unavailable. Online setup opens
+your Mac’s default browser with **Unified Sign In** enabled.
 
 ![The Altium Designer setup window](docs/screenshots/setup-window.png)
 

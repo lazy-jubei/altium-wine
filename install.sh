@@ -1,8 +1,8 @@
 #!/bin/bash
-# install.sh - install Altium Designer on an Apple Silicon Mac under Wine (Altium-on-Wine kit).
+# install.sh - install Altium Designer under Wine on macOS and Linux.
 #
-#   curl -fsSL <release-url>/install.sh | bash
 #   curl -fsSL <release-url>/install.sh -o install.sh && bash install.sh [options]
+#   curl -fsSL <release-url>/install.sh | bash -s -- --terminal
 #   bash wine-kit/install.sh [options]          # from a kit checkout (builds Wine from source)
 #
 # Options:
@@ -18,8 +18,8 @@
 #   --uninstall              remove everything this installed
 #   --terminal               ask in Terminal instead of opening the setup window
 #
-# Everything goes under the install location; nothing is installed system-wide except Rosetta 2
-# (asked first). Re-running updates the kit and patched Wine and keeps your Altium install.
+# The macOS kit installs into its own directory and may install system prerequisites.
+# Re-running updates the kit and patched Wine and keeps your Altium install.
 # Written for macOS's /bin/bash 3.2. The whole script is one function, called on the last line,
 # so `curl | bash` never runs a half-downloaded script.
 
@@ -34,15 +34,8 @@ MODULES_SHA256=""
 
 main() {
     if [ "$(uname -s)" = Linux ]; then
-        if [ -n "$RELEASE_URL" ]; then
-            install_linux_release "$@"
-            return
-        fi
-        local linux_kit
-        linux_kit="$(cd -P "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-        [ -f "$linux_kit/tools/altium-wine-linux.sh" ] ||
-            die "On Linux, run install.sh from the repository checkout."
-        exec bash "$linux_kit/tools/altium-wine-linux.sh" kit-install "$@"
+        install_linux "$@"
+        return
     fi
     local root="${ALTIUM_WINE_ROOT:-}"
     local altium_src="" skip_altium=0 reinstall_altium=0 from_source=0 launcher=1 yes=0 uninstall=0 terminal=0
@@ -385,7 +378,7 @@ Next time, open Altium Designer (Wine) from Applications."
 }
 
 # ---- setup window -------------------------------------------------------------------------
-# With ALTIUM_INSTALLER_UI=app this script runs inside the setup window (tools/AltiumInstaller.swift):
+# With ALTIUM_INSTALLER_UI=app this script runs inside the macOS or Linux setup window:
 # lines on stderr that start with "@@sw<TAB>" are prompts and progress, and answers come back
 # one line at a time on stdin. Fields are tab-separated, with \n, \t and \\ escaped.
 UI="${ALTIUM_INSTALLER_UI:-terminal}"
@@ -426,11 +419,16 @@ ui_wait() {  # ui_wait TITLE TEXT STATUS: a page while something runs, with no b
     ui_emit wait "$1" "$2" "$3"
 }
 
-ui_choose_installer() {  # ui_choose_installer DEFAULT: prints the chosen installer path
+ui_choose_installer() {  # ui_choose_installer DEFAULT [SYSTEM]: prints the chosen installer path
     local chosen="$1" text="Choose your Altium Designer online setup .exe, offline setup folder, or offline .zip."
     while true; do
         ui_emit choose "$chosen" "$text"
         chosen="$(ui_read)" || exit $?
+        if [ "${2:-}" = linux ] && [ -f "$chosen" ]; then
+            case "$chosen" in
+                *.[Ee][Xx][Ee]|*.[Zz][Ii][Pp]) printf '%s\n' "$chosen"; return 0 ;;
+            esac
+        fi
         case "$chosen" in
             *.zip|*.ZIP) [ -f "$chosen" ] && { printf '%s\n' "$chosen"; return 0; } ;;
             *) if [ -n "$(find_altium_setup_exe "$chosen")" ]; then
@@ -683,7 +681,8 @@ find_altium_setup_exe() {
         esac
     elif [ -d "$source" ]; then
         find "$source" -maxdepth 3 -type f \
-            \( -iname 'Installer.Exe' -o -iname 'AltiumDesigner*Setup.exe' -o -iname 'AltiumDesignerSetup*.exe' \) \
+            \( -iname 'Installer.Exe' -o -iname 'AltiumDesigner*Setup.exe' \
+               -o -iname 'AltiumDesignerSetup*.exe' -o -iname 'AltiumDesigner*Setup_*.exe' \) \
             2>/dev/null | head -n 1
     fi
 }
@@ -721,22 +720,104 @@ patched_matches() {  # patched_matches PATCHES SHA256SUMS - every module hash ap
     return 0
 }
 
-install_linux_release() {
-    local root="${ALTIUM_WINE_ROOT:-$HOME/AltiumWineLinux}" kit
-    local args=("$@")
+linux_gui_interactive() {
+    [ -t 0 ] && [ -t 1 ] && [ -z "${CI:-}" ]
+}
+
+linux_gui_probe() {
+    /usr/bin/python3 -IB -c '
+import sys
+import gi
+gi.require_version("Gdk", "4.0")
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gdk, Gtk
+sys.exit(sys.argv[1] == "display" and Gdk.Display.get_default() is None)
+' "$1" >/dev/null 2>&1
+}
+
+linux_gui_package_command() {
+    case " $1 " in
+        *" debian "*|*" ubuntu "*)
+            printf '%s\n' /usr/bin/apt-get install --assume-yes --no-install-recommends --no-remove \
+                python3 python3-gi gir1.2-gtk-4.0
+            ;;
+        *" fedora "*|*" rhel "*)
+            printf '%s\n' /usr/bin/dnf install --assumeyes --setopt=install_weak_deps=False python3 python3-gobject gtk4
+            ;;
+        *" arch "*)
+            printf '%s\n' /usr/bin/pacman -S --needed --noconfirm python python-gobject gtk4
+            ;;
+        *" opensuse "*|*" suse "*|*" opensuse-"*)
+            printf '%s\n' /usr/bin/zypper --non-interactive install --no-recommends \
+                python3-gobject python3-gobject-Gdk typelib-1_0-Gtk-4_0 libgtk-4-1
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+linux_gui_dependencies() {
+    if linux_gui_probe dependencies; then
+        if [ "$1" = check ]; then say "GTK4 and PyGObject are ready."; fi
+        return 0
+    fi
+
+    local ID="" ID_LIKE="" package_command=() privilege=()
+    # shellcheck source=/dev/null
+    if [ -r /etc/os-release ]; then . /etc/os-release; fi
+    mapfile -t package_command < <(linux_gui_package_command "$ID $ID_LIKE")
+    if [ "${#package_command[@]}" = 0 ] || [ ! -x "${package_command[0]}" ]; then
+        warn "Install Python 3, PyGObject, and GTK4 with your system package manager, or run install.sh --terminal." >&2
+        return 1
+    fi
+    if [ "$EUID" != 0 ]; then privilege=(/usr/bin/sudo --); fi
+    if [ "$1" = check ] || ! linux_gui_interactive || { [ "$EUID" != 0 ] && [ ! -x /usr/bin/sudo ]; }; then
+        warn "GTK4 setup dependencies are missing. Install them with:" >&2
+        printf ' %q' "${privilege[@]}" "${package_command[@]}" >&2
+        printf '\nOr use install.sh --terminal for command-line setup.\n' >&2
+        return 1
+    fi
+
+    say "Installing GTK4 and PyGObject prerequisites for the setup window."
+    "${privilege[@]}" "${package_command[@]}" ||
+        { warn "The package manager could not install the setup window dependencies." >&2; return 1; }
+    linux_gui_probe dependencies ||
+        { warn "Python still cannot load GTK4 after installing the packages." >&2; return 1; }
+}
+
+install_linux() (
+    local root="${ALTIUM_WINE_ROOT:-$HOME/AltiumWineLinux}" kit source="" script gui_kit
+    local gui="" terminal=0 yes=0 update=0 skip=0 reinstall=0 build=0 launcher=1
+    local backend_ui=terminal
+    local args=()
     while [ "$#" -gt 0 ]; do
         case "$1" in
-            --root) root="${2:?--root needs a directory}"; shift ;;
-            --altium-installer) : "${2:?--altium-installer needs a path}"; shift ;;
-            --update|--skip-altium|--reinstall-altium|--no-launcher|--build-from-source|--yes|--terminal) ;;
+            --root) root="${2:?--root needs a directory}"; shift 2; continue ;;
+            --altium-installer)
+                source="${2:?--altium-installer needs a path}"
+                args+=("$1" "$source")
+                shift 2; continue
+                ;;
+            --gui) gui=explicit; shift; continue ;;
+            --gui-check) linux_gui_dependencies check; return $? ;;
+            --terminal) terminal=1 ;;
+            --yes) yes=1 ;;
+            --update) update=1 ;;
+            --skip-altium) skip=1 ;;
+            --reinstall-altium) reinstall=1 ;;
+            --no-launcher) launcher=0 ;;
+            --build-from-source) build=1 ;;
             -h|--help)
                 cat <<'HELP'
 Altium Designer on Linux (x86-64)
 
+  bash install.sh [--root DIR]
   bash install.sh --altium-installer PATH [--build-from-source]
   bash install.sh --update [--root DIR]
   bash install.sh --skip-altium
 
+Saved installers open the setup window by default in an interactive Linux desktop.
+Use --terminal for command-line setup, --gui to open the window explicitly,
+or --gui-check to check its dependencies.
 PATH can be the Altium online setup executable, offline ZIP, or extracted folder.
 --update updates the kit for an existing installation.
 Use --root DIR to change the install location and --no-launcher to skip the
@@ -745,13 +826,125 @@ HELP
                 return ;;
             *) die "Unknown option: $1 (try --help)" ;;
         esac
+        args+=("$1")
         shift
     done
     [ "$(uname -m)" = x86_64 ] || die "This kit requires x86-64 Linux."
     root="$(realpath -m -- "$root")" || die "Could not resolve the Linux install location."
-    kit="$root/kits/$KIT_VERSION"
-    prepare_linux_kit "$kit" || exit 1
-    exec bash "$kit/tools/altium-wine-linux.sh" kit-install "${args[@]}"
+    [ "$root" != / ] || die "Choose an installation folder."
+    script="$(realpath -e -- "${BASH_SOURCE[0]:-$0}" 2>/dev/null)" || script=""
+    if [ -n "$RELEASE_URL" ]; then
+        kit="$root/kits/$KIT_VERSION"
+    else
+        kit="${script%/*}"
+        [ -f "$kit/tools/altium-wine-linux.sh" ] ||
+            die "On Linux, run install.sh from the repository checkout."
+    fi
+    if [ "$UI" != app ] && [ "$terminal" = 0 ] && [ "$yes" = 0 ] && [ -z "$gui" ] &&
+        [ -z "${ALTIUM_INSTALLER_UI:-}" ] && [ -f "$script" ] && linux_gui_interactive &&
+        [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && [ -z "$source" ] &&
+        [ "$update" = 0 ] && [ "$skip" = 0 ] && [ "$reinstall" = 0 ] && [ "$build" = 0 ]; then
+        gui=auto
+    fi
+    if [ "$UI" != app ] && [ -n "$gui" ] && [ "$terminal" = 0 ] && [ "$yes" = 0 ]; then
+        [ -f "$script" ] || die "Save install.sh to a file before using --gui."
+        [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] ||
+            die "The setup window requires a graphical session. Use --terminal for command-line setup."
+        linux_gui_dependencies install ||
+            die "Could not prepare the setup window. Use --terminal for command-line setup."
+        if linux_gui_probe display; then
+            gui_kit="$kit"
+            if [ -n "$RELEASE_URL" ] && ! linux_kit_matches "$kit"; then
+                # Verify the frontend separately so quitting does not write to the installation.
+                gui_kit="${XDG_CACHE_HOME:-$HOME/.cache}/altium-wine/kits/$KIT_VERSION"
+                prepare_linux_kit "$gui_kit" || exit 1
+            fi
+            [ -f "$gui_kit/tools/altium-linux-installer.py" ] || die "This kit has no Linux setup window."
+            exec /usr/bin/python3 -I "$gui_kit/tools/altium-linux-installer.py" --script "$script" --root "$root" -- "${args[@]}"
+        fi
+        [ "$gui" != explicit ] || die "GTK4 could not open a display. Use --terminal for command-line setup."
+        warn "GTK4 could not open a display. Continuing in Terminal."
+    fi
+
+    if [ "$UI" = app ]; then
+        trap 'rc=$?; if [ "$rc" != 0 ] && [ "$rc" != 130 ]; then ui_emit failed "$UI_STAGE"; fi' EXIT
+        trap 'exit 130' HUP INT TERM
+        if [ "$update" = 0 ] && [ "$skip" = 0 ]; then
+            local choice installed=0 has_prefix=0 active="" current_version="" target="$KIT_VERSION"
+            if [ -e "$root/prefix" ] || [ -L "$root/prefix" ]; then has_prefix=1; fi
+            if [ -f "${ALTIUM_WINE_EXE:-}" ] || [ -n "$(find_altium_exe "$root/prefix")" ]; then
+                installed=1
+            fi
+            active="$(realpath -e -- "$root/kits/current" 2>/dev/null)" || active=""
+            if [ -n "$active" ] && [ "${active%/*}" = "$root/kits" ] &&
+                [ -s "$active/.release-sha256" ]; then
+                current_version="${active##*/}"
+            fi
+            if [ "$target" = dev ] && [ "${kit%/*}" = "$root/kits" ] && [ -s "$kit/.release-sha256" ]; then
+                target="${kit##*/}"
+            fi
+            ui_stage installer "checking this Linux system"
+            ui_emit welcome "$installed" "$has_prefix" "$current_version" "$target"
+            choice="$(ui_read)" || exit $?
+            case "$choice" in
+                update)
+                    [ "$installed" = 1 ] || die "No existing installation was found."
+                    [ -z "$source" ] && [ "$reinstall" = 0 ] ||
+                        die "The kit update does not use an Altium installer. Select Install Altium to run setup."
+                    update=1
+                    args+=(--update)
+                    ;;
+                install|clean)
+                    # A fresh installation belongs in a distinct, empty root. Never erase a prefix.
+                    [ "$choice" != clean ] || [ "$has_prefix" = 0 ] ||
+                        die "Choose a separate installation folder for a clean install."
+                    if [ -z "$source" ]; then
+                        source="$(ui_choose_installer "$(find_altium_installer)" linux)" || exit $?
+                        args+=(--altium-installer "$source")
+                    fi
+                    if [ "$installed" = 1 ] && [ "$reinstall" = 0 ]; then
+                        args+=(--reinstall-altium)
+                    fi
+                    ;;
+                *) die "Unknown setup choice." ;;
+            esac
+        fi
+        if [ "$update" = 1 ]; then
+            ui_stage wine "updating the Linux installation kit"
+        else
+            ui_stage wine "preparing Wine"
+        fi
+    fi
+    if [ -n "$RELEASE_URL" ]; then prepare_linux_kit "$kit" || exit 1; fi
+    if [ "$UI" != app ]; then
+        exec bash "$kit/tools/altium-wine-linux.sh" kit-install --root "$root" "${args[@]}"
+    fi
+    if [ "$update" = 0 ] && [ "$skip" = 0 ]; then
+        backend_ui=app
+        UI_STAGE="preparing Wine or running Altium setup"
+    fi
+    ALTIUM_INSTALLER_UI="$backend_ui" bash "$kit/tools/altium-wine-linux.sh" kit-install --root "$root" "${args[@]}" < /dev/null || exit $?
+    ui_stage finish "finishing setup"
+    if [ "$update" = 1 ]; then
+        ui_emit finished "Update complete. The next Altium launch will use the updated kit."
+    elif [ "$skip" = 1 ]; then
+        ui_emit finished "Wine is ready. Run setup again with your Altium installer."
+    elif [ "$launcher" = 0 ]; then
+        local run_kit="$kit" command_line
+        if [ "${kit%/*}" = "$root/kits" ] && [ -f "$root/kits/current/altium-wine.sh" ]; then
+            run_kit="$root/kits/current"
+        fi
+        printf -v command_line 'ALTIUM_WINE_ROOT=%q bash %q run' "$root" "$run_kit/altium-wine.sh"
+        ui_emit finished "$(printf 'Altium setup is complete. To open this installation, run:\n\n%s' "$command_line")"
+    else
+        ui_emit finished "Altium setup is complete. Open Altium Designer (Wine) to get started."
+    fi
+)
+
+linux_kit_matches() {
+    local kit="$1"
+    [ ! -L "$kit" ] && [ -s "$kit/tools/altium-wine-linux.sh" ] &&
+        [ "$(cat "$kit/.release-sha256" 2>/dev/null)" = "$KIT_SHA256" ]
 }
 
 prepare_linux_kit() (
@@ -761,9 +954,7 @@ prepare_linux_kit() (
     exec 9>"$directory/.install.lock" || die "Could not open the kit lock."
     flock 9 || die "Could not lock the kit directory."
     if [ -e "$kit" ] || [ -L "$kit" ]; then
-        [ ! -L "$kit" ] && [ -s "$kit/tools/altium-wine-linux.sh" ] &&
-            [ "$(cat "$kit/.release-sha256" 2>/dev/null)" = "$KIT_SHA256" ] &&
-            return 0
+        linux_kit_matches "$kit" && return 0
         die "The existing kit at $kit does not match this release."
     fi
 

@@ -10,17 +10,20 @@ Nothing is installed system-wide. Wine, the prefix and the downloads all live in
 
 ## Install
 
-Download the installer from the [latest release](https://github.com/lazy-jubei/altium-wine/releases/latest), inspect it, then run it:
+Download and run the installer from the [latest release](https://github.com/lazy-jubei/altium-wine/releases/latest).
 
 ```bash
-curl -fL https://github.com/lazy-jubei/altium-wine/releases/latest/download/install.sh -o install.sh
-bash install.sh
+curl -fsSL https://github.com/lazy-jubei/altium-wine/releases/latest/download/install.sh -o install.sh && bash install.sh
 ```
 
-Pass an online setup .exe, offline setup folder, or offline ZIP with `--altium-installer`.
+Choose an online setup executable, offline setup folder, or offline ZIP from
+your Altium account in the setup window. You can also pass the path with
+`--altium-installer`.
 The release includes prebuilt patched Wine modules, so Xcode is not required for the default install.
 
-A setup window walks you through it (`--terminal` asks in Terminal instead). The installer sets up Wine and fonts, runs your Altium installer, and creates `~/Applications/Altium Designer (Wine).app`. Downloads are checksum-verified. Get the Altium installer from your Altium account.
+The installer sets up Wine and fonts, runs your Altium installer, and creates
+`~/Applications/Altium Designer (Wine).app`. Downloads are checksum-verified.
+Use `--terminal` for command-line setup.
 
 - `--altium-installer PATH`
 - `--skip-altium`

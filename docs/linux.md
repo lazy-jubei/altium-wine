@@ -5,13 +5,30 @@ was tested on Ubuntu 24.04 (X11) with Altium Designer 26.12.2.
 
 ## Install
 
-Download the release installer and pass your Altium online setup executable,
-offline ZIP, or extracted setup folder.
+Download the release installer and run it. Have your Altium online setup
+executable, offline ZIP, or extracted setup folder ready.
 
 ```sh
-curl -fsSL https://github.com/lazy-jubei/altium-wine/releases/latest/download/install.sh -o install.sh
-bash install.sh --altium-installer "$HOME/Downloads/AltiumDesignerSetup_26_12_2.exe"
+curl -fsSL https://github.com/lazy-jubei/altium-wine/releases/latest/download/install.sh -o install.sh && bash install.sh
 ```
+
+### Graphical setup
+
+Running the saved installer from an interactive desktop terminal opens the
+setup window. It provides the installer picker, progress, a Terminal drawer,
+and version-aware updates. The installer uses APT, DNF, Pacman, or Zypper to
+install Python 3, PyGObject, and GTK4 if needed. This may prompt for your
+administrator password. Use `--gui` to open the window explicitly or
+`--gui-check` to check dependencies without installing packages.
+
+The window supports X11 and Wayland without requiring GNOME. You can browse
+for the installer or enter its path directly. For command-line setup, run
+`bash install.sh --terminal --altium-installer PATH`.
+
+The **Update** button keeps the existing Wine prefix. **Clean Install…**
+opens a fresh setup in an empty location while keeping the existing
+installation and its shortcut. Set `--root DIR` to choose the initial
+location. Use the terminal commands in this guide for headless setup.
 
 The release installer verifies the kit archive and stores it under
 `~/AltiumWineLinux/kits/<version>`. Run the terminal commands below from
@@ -30,6 +47,7 @@ Set `ALTIUM_WINE_INSTALL_DESKTOP=1280x800` to use a Wine virtual desktop.
 For online setup, leave **Unified Sign In** enabled and continue in your
 browser when Altium asks you to sign in. For offline setup, turn it off
 under **Advanced Settings** if it is enabled.
+To cancel after Altium setup has opened, close the Altium installer window.
 At the end, clear **Run Altium Designer** and click **Finish** so the kit
 can apply its graphics settings on first launch.
 
@@ -52,11 +70,10 @@ bash "$HOME/AltiumWineLinux/kits/current/altium-wine.sh" update --check
 bash "$HOME/AltiumWineLinux/kits/current/altium-wine.sh" update
 ```
 
-For an older installation, download the latest release installer and run
-`bash install.sh --update`. Running the latest release installer without an
-Altium installer path also updates an existing setup. Use `--root DIR` for
-a custom installation location. An update preserves your Wine prefix,
-installed Altium, logs, and desktop launcher options.
+For an older installation, download the latest release installer and select
+**Update** in the setup window, or run `bash install.sh --update`. Use
+`--root DIR` for a custom installation location. An update preserves your
+Wine prefix, installed Altium, logs, and desktop launcher options.
 
 To update Altium Designer itself, use **Extensions and Updates** in Designer
 or run a newer vendor installer with

@@ -1,5 +1,5 @@
 #!/bin/bash
-# make-release.sh - package the kit for `curl | bash` installs. Writes files locally; uploading
+# make-release.sh - package the downloadable installer and kit. Writes files locally; uploading
 # them (e.g. as GitHub release assets) is a separate, manual step.
 #
 # Usage:  bash make-release.sh --version v1.0 --url BASE_URL --modules DIR
@@ -15,7 +15,7 @@
 #
 # Output: install.sh (stamped with the URL and checksums), altium-wine-kit-VERSION.tar.gz,
 # altium-wine-modules-VERSION.tar.gz, SHA256SUMS. Users then run:
-#   curl -fsSL BASE_URL/install.sh | bash
+#   curl -fsSL BASE_URL/install.sh -o install.sh && bash install.sh
 
 set -euo pipefail
 
@@ -133,4 +133,4 @@ echo "Release $VERSION in $OUT:"
 ls -la "$OUT"
 echo
 echo "Upload these files so they are reachable at $URL/<name>, then users run:"
-echo "  curl -fsSL $URL/install.sh | bash"
+echo "  curl -fsSL $URL/install.sh -o install.sh && bash install.sh"

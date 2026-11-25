@@ -316,14 +316,20 @@ install_altium() (
     flock -n 7 || die "An installer is already running in $ROOT"
     local exe name options=()
     exe="$(installer_exe "$@")" || exit 1
-    setup
+    # Keep the lock in the supervising shell. Wine can start detached processes.
+    setup 7>&-
     name="${exe##*/}"
     case "${name,,}" in
         altiumdesigner*setup.exe|altiumdesigner*setup_*.exe) options=(--online) ;;
     esac
     printf '%s\n' 'For online setup, leave Unified Sign In enabled to sign in through your browser.' \
         'For offline setup, disable Unified Sign In under Advanced Settings if it is enabled.'
-    launch Setup "${ALTIUM_WINE_INSTALL_DESKTOP:-native}" "$exe" "${options[@]}"
+    if [[ ${ALTIUM_INSTALLER_UI:-} = app ]]; then
+        printf '@@sw\tstage\taltium\tstarting the Altium installer\n' >&2
+        printf '@@sw\twait\tInstall Altium\t%s\tWaiting for Altium setup.\n' \
+            'Follow setup in the Altium installer window. Online setup uses your default browser.' >&2
+    fi
+    launch Setup "${ALTIUM_WINE_INSTALL_DESKTOP:-native}" "$exe" "${options[@]}" 7>&-
 )
 
 get_altium() {
