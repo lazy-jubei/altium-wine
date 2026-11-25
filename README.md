@@ -37,13 +37,15 @@ For an existing installation, rerun the command above and choose **Update**.
 The installed kit also supports `altium-wine.sh update` and
 `altium-wine.sh update --check`. [Linux setup guide](docs/linux.md)
 
+![Altium Designer setup window on Linux](docs/screenshots/linux-setup-window.png)
+
 ### macOS
 
 The setup window is built on your Mac with Apple’s Command Line Tools. The
 installer uses Terminal if those tools are unavailable. Online setup opens
 your Mac’s default browser with **Unified Sign In** enabled.
 
-![The Altium Designer setup window](docs/screenshots/setup-window.png)
+![Altium Designer setup window on macOS](docs/screenshots/setup-window.png)
 
 The installer sets up Wine and fonts and creates `~/Applications/Altium Designer (Wine).app`. It uses prebuilt Wine modules, so Xcode isn't required. The fonts need `cabextract`, which comes from MacPorts; setup installs MacPorts from its notarized package if it isn't there (one administrator password). On Apple Silicon, Rosetta 2 is required; setup offers to install it.
 
